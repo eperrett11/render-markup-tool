@@ -10,6 +10,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
 
     <!-- Supabase (Storage only — used purely as a blob store for shared boards, no auth/DB). -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -263,7 +267,7 @@
                 <i class="fa-solid fa-cloud-arrow-up"></i>
                 <span>Upload</span>
                 <!-- Allow multiple image selection -->
-                <input type="file" id="imageUpload" accept="image/*" multiple>
+                <input type="file" id="imageUpload" accept="image/*,application/pdf" multiple>
             </label>
             <button id="btn-undo" class="toolbar-icon-btn" data-tooltip="Undo (Ctrl+Z)" disabled>
                 <i class="fa-solid fa-rotate-left"></i>
@@ -469,6 +473,28 @@
         </div>
 
         <div id="share-toast" class="hidden absolute z-50 top-4 left-1/2 -translate-x-1/2 max-w-md text-center bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl px-4 py-2 text-sm text-gray-100 font-medium pointer-events-none"></div>
+
+        <div id="pdf-page-modal" class="hidden fixed inset-0 z-[100] items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div class="bg-gray-950 border border-gray-700 rounded-lg shadow-2xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col">
+                <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+                    <h2 class="text-sm font-semibold text-gray-100">Select pages to import <span id="pdf-modal-filename" class="text-gray-500 font-normal"></span></h2>
+                    <button id="pdf-modal-close" class="text-gray-500 hover:text-white transition-colors">
+                        <i class="fa-solid fa-xmark text-base"></i>
+                    </button>
+                </div>
+                <div id="pdf-page-grid" class="flex-1 overflow-y-auto p-5 grid grid-cols-4 gap-4 content-start"></div>
+                <div class="flex items-center justify-between px-5 py-3.5 border-t border-gray-800">
+                    <div class="flex items-center gap-3">
+                        <button id="pdf-select-all" class="text-xs font-medium text-gray-400 hover:text-white transition-colors">Select all</button>
+                        <button id="pdf-select-none" class="text-xs font-medium text-gray-400 hover:text-white transition-colors">Select none</button>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="pdf-modal-cancel" class="h-8 px-3 rounded text-xs font-medium text-gray-300 hover:bg-gray-800 transition-colors">Cancel</button>
+                        <button id="pdf-modal-add" class="h-8 px-3.5 rounded bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white transition-colors disabled:opacity-40 disabled:pointer-events-none">Add <span id="pdf-select-count">0</span> pages</button>
+                    </div>
+                </div>
+            </div>
+        </div>
 
     </main>
 
@@ -1944,98 +1970,324 @@
             });
 
             // Reusable function to handle file loading (used by both input and drop)
-            function processFiles(files, dropPointer = null) {
-                let offset = 0; // Used to stagger multiple images so they don't perfectly overlap
-                let dropSequence = 0; // Staggers the drop-in animation so multiple images pop in one by one
-
-                // Use getWidth() and getHeight() to avoid NaN positioning errors
+            // Adds one image (from a data URL) onto the canvas with the standard staggered
+            // drop-in animation. Shared by the direct image-file path and the PDF page-picker,
+            // so a flattened PDF page behaves exactly like any other dropped image.
+            // `counter` is a shared {offset, dropSequence} object mutated across a whole batch
+            // so multiple images/pages added together still stagger relative to each other.
+            // `options.maxW`/`options.maxH` override the default "80% of canvas" auto-fit —
+            // used to shrink each image to a grid cell's size when laying out a multi-page
+            // PDF import. `options.skipOffset` suppresses the usual staggered-position nudge
+            // (grid placement already gives each image its own distinct spot).
+            function addImageToCanvas(dataUrl, fileName, dropPointer, counter, options = {}) {
                 const cWidth = canvas.getWidth();
                 const cHeight = canvas.getHeight();
 
+                const imgElement = new Image();
+                imgElement.onload = function() {
+                    const img = new fabric.Image(imgElement);
+                    img.sourceFileName = fileName;
+
+                    // Scale down large images initially to fit canvas nicely
+                    const maxW = options.maxW || cWidth * 0.8;
+                    const maxH = options.maxH || cHeight * 0.8;
+                    if (img.width > maxW || img.height > maxH) {
+                        img.scaleToWidth(maxW);
+                        if (img.getScaledHeight() > maxH) {
+                            img.scaleToHeight(maxH);
+                        }
+                    }
+
+                    // Calculate target drop location. If defaulting to center,
+                    // make sure it drops in the VISUAL center of current pan/zoom
+                    const vpt = canvas.viewportTransform;
+                    let targetX = (cWidth / 2 - vpt[4]) / vpt[0];
+                    let targetY = (cHeight / 2 - vpt[5]) / vpt[3];
+
+                    if (dropPointer && typeof dropPointer.x === 'number' && !isNaN(dropPointer.x)) {
+                        targetX = dropPointer.x;
+                        targetY = dropPointer.y;
+                    }
+
+                    // Apply coordinates and properties. Land it slightly small/transparent
+                    // and animate up to full size/opacity — a quick, one-by-one "drop in".
+                    const finalScaleX = img.scaleX;
+                    const finalScaleY = img.scaleY;
+                    const posOffset = options.skipOffset ? 0 : counter.offset;
+                    img.set({
+                        left: targetX + posOffset,
+                        top: targetY + posOffset,
+                        originX: 'center',
+                        originY: 'center',
+                        opacity: 0,
+                        scaleX: finalScaleX * 0.92,
+                        scaleY: finalScaleY * 0.92
+                    });
+
+                    if (!options.skipOffset) counter.offset += 30; // Shift the next image by 30px so it's visible
+
+                    canvas.add(img);
+
+                    // Keep image below annotations, but above older images
+                    const objects = canvas.getObjects();
+                    let lowestAnnotationIndex = -1;
+                    for (let i = 0; i < objects.length - 1; i++) {
+                        if (objects[i].type !== 'image') {
+                            lowestAnnotationIndex = i;
+                            break;
+                        }
+                    }
+
+                    if (lowestAnnotationIndex !== -1) {
+                        img.moveTo(lowestAnnotationIndex);
+                    }
+
+                    canvas.setActiveObject(img);
+
+                    const dropDelay = (counter.dropSequence++) * 55;
+                    setTimeout(() => {
+                        const render = () => canvas.requestRenderAll();
+                        img.animate('opacity', 1, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render });
+                        img.animate('scaleX', finalScaleX, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render });
+                        img.animate('scaleY', finalScaleY, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render, onComplete: () => saveHistory() });
+                    }, dropDelay);
+                };
+
+                // Set source AFTER defining onload to prevent caching race conditions
+                imgElement.src = dataUrl;
+            }
+
+            // Reusable function to handle file loading (used by both input and drop)
+            function processFiles(files, dropPointer = null) {
+                // Shared across the whole batch so multiple images/PDF pages still stagger
+                // relative to one another instead of each resetting to offset 0.
+                const counter = { offset: 0, dropSequence: 0 };
+
                 Array.from(files).forEach(file => {
+                    const isPdf = file.type === 'application/pdf' || file.name.match(/\.pdf$/i);
+                    if (isPdf) {
+                        queuePdfForPagePicker(file, dropPointer, counter);
+                        return;
+                    }
+
                     // Safety check that works even if OS hides MIME type during drag-and-drop
                     const isImage = (file.type && file.type.startsWith('image/')) || file.name.match(/\.(jpg|jpeg|png|gif|webp)$/i);
                     if (!isImage) return;
 
                     const reader = new FileReader();
                     reader.onload = function(event) {
-                        // Use native HTML Image element for ultra-reliable base64 loading
-                        const imgElement = new Image();
-                        imgElement.onload = function() {
-                            const img = new fabric.Image(imgElement);
-                            img.sourceFileName = file.name;
-
-                            // Scale down large images initially to fit canvas nicely
-                            const maxW = cWidth * 0.8;
-                            const maxH = cHeight * 0.8;
-                            if (img.width > maxW || img.height > maxH) {
-                                img.scaleToWidth(maxW);
-                                if (img.getScaledHeight() > maxH) {
-                                    img.scaleToHeight(maxH);
-                                }
-                            }
-
-                            // Calculate target drop location. If defaulting to center, 
-                            // make sure it drops in the VISUAL center of current pan/zoom
-                            const vpt = canvas.viewportTransform;
-                            let targetX = (cWidth / 2 - vpt[4]) / vpt[0];
-                            let targetY = (cHeight / 2 - vpt[5]) / vpt[3];
-
-                            if (dropPointer && typeof dropPointer.x === 'number' && !isNaN(dropPointer.x)) {
-                                targetX = dropPointer.x;
-                                targetY = dropPointer.y;
-                            }
-
-                            // Apply coordinates and properties. Land it slightly small/transparent
-                            // and animate up to full size/opacity — a quick, one-by-one "drop in".
-                            const finalScaleX = img.scaleX;
-                            const finalScaleY = img.scaleY;
-                            img.set({
-                                left: targetX + offset,
-                                top: targetY + offset,
-                                originX: 'center',
-                                originY: 'center',
-                                opacity: 0,
-                                scaleX: finalScaleX * 0.92,
-                                scaleY: finalScaleY * 0.92
-                            });
-
-                            offset += 30; // Shift the next image by 30px so it's visible
-
-                            canvas.add(img);
-
-                            // Keep image below annotations, but above older images
-                            const objects = canvas.getObjects();
-                            let lowestAnnotationIndex = -1;
-                            for (let i = 0; i < objects.length - 1; i++) {
-                                if (objects[i].type !== 'image') {
-                                    lowestAnnotationIndex = i;
-                                    break;
-                                }
-                            }
-
-                            if (lowestAnnotationIndex !== -1) {
-                                img.moveTo(lowestAnnotationIndex);
-                            }
-
-                            canvas.setActiveObject(img);
-
-                            const dropDelay = (dropSequence++) * 55;
-                            setTimeout(() => {
-                                const render = () => canvas.requestRenderAll();
-                                img.animate('opacity', 1, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render });
-                                img.animate('scaleX', finalScaleX, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render });
-                                img.animate('scaleY', finalScaleY, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render, onComplete: () => saveHistory() });
-                            }, dropDelay);
-                        };
-                        
-                        // Set source AFTER defining onload to prevent caching race conditions
-                        imgElement.src = event.target.result;
+                        addImageToCanvas(event.target.result, file.name, dropPointer, counter);
                     };
                     reader.readAsDataURL(file);
                 });
                 setMode('select', 'btn-select');
             }
+
+            // --- PDF import: pick pages, flatten each selected page to a PNG, then drop it
+            // onto the canvas through the same addImageToCanvas() path as any other image. ---
+
+            const pdfPageModal = document.getElementById('pdf-page-modal');
+            const pdfPageGrid = document.getElementById('pdf-page-grid');
+            const pdfModalFilename = document.getElementById('pdf-modal-filename');
+            const pdfSelectCount = document.getElementById('pdf-select-count');
+            const pdfModalAddBtn = document.getElementById('pdf-modal-add');
+
+            const pdfImportQueue = [];
+            let activePdfImport = null; // { file, dropPointer, counter, pdfDoc, selectedPages: Set }
+
+            function queuePdfForPagePicker(file, dropPointer, counter) {
+                pdfImportQueue.push({ file, dropPointer, counter });
+                if (!activePdfImport) processNextPdfInQueue();
+            }
+
+            async function processNextPdfInQueue() {
+                const next = pdfImportQueue.shift();
+                if (!next) { activePdfImport = null; return; }
+
+                let pdfDoc;
+                try {
+                    const arrayBuffer = await next.file.arrayBuffer();
+                    pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                } catch (err) {
+                    console.error('Failed to open PDF', err);
+                    processNextPdfInQueue();
+                    return;
+                }
+
+                activePdfImport = {
+                    file: next.file,
+                    dropPointer: next.dropPointer,
+                    counter: next.counter,
+                    pdfDoc,
+                    selectedPages: new Set() // Deselected by default — user picks which pages to import
+                };
+
+                await openPdfPagePicker();
+            }
+
+            async function renderPdfPageToDataUrl(page, targetWidth) {
+                const baseViewport = page.getViewport({ scale: 1 });
+                const scale = targetWidth / baseViewport.width;
+                const viewport = page.getViewport({ scale });
+
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width = Math.ceil(viewport.width);
+                pageCanvas.height = Math.ceil(viewport.height);
+                const ctx = pageCanvas.getContext('2d');
+                await page.render({ canvasContext: ctx, viewport }).promise;
+                return pageCanvas.toDataURL('image/png');
+            }
+
+            function updatePdfSelectCount() {
+                const count = activePdfImport.selectedPages.size;
+                pdfSelectCount.textContent = count;
+                pdfModalAddBtn.disabled = count === 0;
+            }
+
+            // Keeps a grid cell's border/checkmark in sync with its selection state, and
+            // updates the shared selectedPages set — the single source of truth used by both
+            // individual-cell clicks and the select-all/select-none buttons.
+            function setPdfPageCellSelected(cell, pageNum, selected) {
+                const badge = cell.querySelector('.pdf-check-badge');
+                if (selected) {
+                    activePdfImport.selectedPages.add(pageNum);
+                    cell.classList.add('border-blue-500');
+                    cell.classList.remove('border-transparent');
+                    badge.classList.remove('hidden');
+                    badge.classList.add('flex');
+                } else {
+                    activePdfImport.selectedPages.delete(pageNum);
+                    cell.classList.remove('border-blue-500');
+                    cell.classList.add('border-transparent');
+                    badge.classList.add('hidden');
+                    badge.classList.remove('flex');
+                }
+                updatePdfSelectCount();
+            }
+
+            async function openPdfPagePicker() {
+                const { file, pdfDoc, selectedPages } = activePdfImport;
+                pdfModalFilename.textContent = `— ${file.name}`;
+                pdfPageGrid.innerHTML = '';
+                pdfPageModal.classList.remove('hidden');
+                pdfPageModal.classList.add('flex');
+                updatePdfSelectCount();
+
+                for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+                    const cell = document.createElement('button');
+                    cell.type = 'button';
+                    cell.className = 'group relative rounded-lg border-2 border-transparent bg-gray-900 overflow-hidden transition-colors text-left';
+                    cell.innerHTML = `
+                        <div class="aspect-[3/4] flex items-center justify-center bg-gray-800">
+                            <i class="fa-solid fa-spinner fa-spin text-gray-600"></i>
+                        </div>
+                        <div class="pdf-check-badge hidden absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-blue-600 border border-white/30 items-center justify-center">
+                            <i class="fa-solid fa-check text-[10px] text-white"></i>
+                        </div>
+                        <div class="px-2 py-1 text-[11px] text-gray-300 font-medium">Page ${pageNum}</div>
+                    `;
+                    pdfPageGrid.appendChild(cell);
+
+                    cell.addEventListener('click', () => {
+                        setPdfPageCellSelected(cell, pageNum, !selectedPages.has(pageNum));
+                    });
+
+                    // Render the thumbnail after wiring the click handler so slow renders don't
+                    // block the page from being selectable.
+                    pdfDoc.getPage(pageNum).then(page => renderPdfPageToDataUrl(page, 300)).then(dataUrl => {
+                        const thumbWrap = cell.querySelector('.aspect-\\[3\\/4\\]');
+                        thumbWrap.innerHTML = `<img src="${dataUrl}" class="w-full h-full object-contain" draggable="false">`;
+                    }).catch(err => console.error('Failed to render PDF page thumbnail', err));
+                }
+            }
+
+            function closePdfPagePicker() {
+                pdfPageModal.classList.add('hidden');
+                pdfPageModal.classList.remove('flex');
+                activePdfImport = null;
+                processNextPdfInQueue();
+            }
+
+            document.getElementById('pdf-modal-close').addEventListener('click', closePdfPagePicker);
+            document.getElementById('pdf-modal-cancel').addEventListener('click', closePdfPagePicker);
+
+            document.getElementById('pdf-select-all').addEventListener('click', () => {
+                if (!activePdfImport) return;
+                pdfPageGrid.querySelectorAll(':scope > button').forEach((cell, i) => {
+                    setPdfPageCellSelected(cell, i + 1, true);
+                });
+            });
+
+            document.getElementById('pdf-select-none').addEventListener('click', () => {
+                if (!activePdfImport) return;
+                pdfPageGrid.querySelectorAll(':scope > button').forEach((cell, i) => {
+                    setPdfPageCellSelected(cell, i + 1, false);
+                });
+            });
+
+            pdfModalAddBtn.addEventListener('click', async () => {
+                const { file, pdfDoc, selectedPages, dropPointer, counter } = activePdfImport;
+                const pages = Array.from(selectedPages).sort((a, b) => a - b);
+                pdfModalAddBtn.disabled = true;
+                closePdfPagePicker();
+
+                // A single page just drops in at the default centered/auto-fit spot, same as
+                // any other image. Multiple pages are laid out on a grid, in page order, so a
+                // multi-page PDF reads as an ordered set instead of a pile of overlapping pages.
+                const useGrid = pages.length > 1;
+                let gridCols, gridRows, cellW, cellH, gridLeft, gridTop;
+                if (useGrid) {
+                    const cWidth = canvas.getWidth();
+                    const cHeight = canvas.getHeight();
+                    const vpt = canvas.viewportTransform;
+                    let centerX = (cWidth / 2 - vpt[4]) / vpt[0];
+                    let centerY = (cHeight / 2 - vpt[5]) / vpt[3];
+                    if (dropPointer && typeof dropPointer.x === 'number' && !isNaN(dropPointer.x)) {
+                        centerX = dropPointer.x;
+                        centerY = dropPointer.y;
+                    }
+
+                    gridCols = Math.ceil(Math.sqrt(pages.length));
+                    gridRows = Math.ceil(pages.length / gridCols);
+
+                    const availW = (cWidth / vpt[0]) * 0.85;
+                    const availH = (cHeight / vpt[3]) * 0.85;
+                    cellW = availW / gridCols;
+                    cellH = availH / gridRows;
+                    gridLeft = centerX - availW / 2;
+                    gridTop = centerY - availH / 2;
+                }
+
+                for (let i = 0; i < pages.length; i++) {
+                    const pageNum = pages[i];
+                    try {
+                        const page = await pdfDoc.getPage(pageNum);
+                        const dataUrl = await renderPdfPageToDataUrl(page, 1800);
+                        const baseName = file.name.replace(/\.pdf$/i, '');
+                        const pageLabel = pdfDoc.numPages > 1 ? `${baseName} (p${pageNum})` : baseName;
+
+                        if (useGrid) {
+                            const row = Math.floor(i / gridCols);
+                            const col = i % gridCols;
+                            const cellCenter = {
+                                x: gridLeft + cellW * (col + 0.5),
+                                y: gridTop + cellH * (row + 0.5)
+                            };
+                            // 10% gutter inside each cell so neighboring pages don't touch
+                            addImageToCanvas(dataUrl, pageLabel, cellCenter, counter, {
+                                maxW: cellW * 0.9,
+                                maxH: cellH * 0.9,
+                                skipOffset: true
+                            });
+                        } else {
+                            addImageToCanvas(dataUrl, pageLabel, dropPointer, counter);
+                        }
+                    } catch (err) {
+                        console.error('Failed to flatten PDF page', err);
+                    }
+                }
+                setMode('select', 'btn-select');
+            });
 
             const toolBtns = document.querySelectorAll('.toolbar-btn');
             
@@ -2849,8 +3101,128 @@
                 e.target.value = '';
             });
 
+            // In-board copy/paste (Ctrl/Cmd+C then Ctrl/Cmd+V) for the current selection —
+            // this is a separate, internal clipboard from the OS one. Without it, Ctrl+V falls
+            // through to the OS-image paste handler below, which silently pastes whatever
+            // image happened to be on the system clipboard instead of duplicating the
+            // selected object, which is what users actually expect from Ctrl+C/Ctrl+V.
+            let internalClipboard = null; // array of { kind: 'object', obj } | { kind: 'callout', calloutId }
+            let suppressNextOsPaste = false;
+            const INTERNAL_PASTE_OFFSET = 24;
+
+            function cloneFabricObject(obj) {
+                return new Promise(resolve => obj.clone(resolve));
+            }
+
+            function copySelectionToInternalClipboard() {
+                const active = canvas.getActiveObject();
+                if (!active || active.isEditing) return false;
+
+                const objects = active.type === 'activeSelection' ? active.getObjects() : [active];
+                const seenCallouts = new Set();
+                const items = [];
+                objects.forEach(obj => {
+                    if (obj.calloutId) {
+                        if (seenCallouts.has(obj.calloutId)) return;
+                        seenCallouts.add(obj.calloutId);
+                        items.push({ kind: 'callout', calloutId: obj.calloutId });
+                    } else {
+                        items.push({ kind: 'object', obj });
+                    }
+                });
+
+                if (items.length === 0) return false;
+                internalClipboard = items;
+                return true;
+            }
+
+            async function pasteInternalClipboard() {
+                if (!internalClipboard || internalClipboard.length === 0) return;
+                const dx = INTERNAL_PASTE_OFFSET, dy = INTERNAL_PASTE_OFFSET;
+                const pasted = [];
+
+                for (const item of internalClipboard) {
+                    if (item.kind === 'object') {
+                        const cloned = await cloneFabricObject(item.obj);
+                        cloned.set({ left: item.obj.left + dx, top: item.obj.top + dy, evented: true });
+                        canvas.add(cloned);
+
+                        // Keep a pasted image below annotations, same rule addImageToCanvas uses
+                        if (cloned.type === 'image') {
+                            const canvasObjects = canvas.getObjects();
+                            let lowestAnnotationIndex = -1;
+                            for (let i = 0; i < canvasObjects.length - 1; i++) {
+                                if (canvasObjects[i].type !== 'image') { lowestAnnotationIndex = i; break; }
+                            }
+                            if (lowestAnnotationIndex !== -1) cloned.moveTo(lowestAnnotationIndex);
+                        }
+
+                        pasted.push(cloned);
+                    } else if (item.kind === 'callout') {
+                        const entry = calloutRegistry[item.calloutId];
+                        if (!entry) continue;
+
+                        const newId = 'callout_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+
+                        const newLeg1 = new fabric.Line(
+                            [entry.leg1.x1 + dx, entry.leg1.y1 + dy, entry.leg1.x2 + dx, entry.leg1.y2 + dy],
+                            {
+                                stroke: entry.leg1.stroke, strokeWidth: entry.leg1.strokeWidth, fill: entry.leg1.fill,
+                                strokeUniform: true, selectable: false, evented: false, strokeLineCap: 'round',
+                                perPixelTargetFind: true, calloutId: newId, calloutRole: 'leg1',
+                                tipX: entry.leg1.tipX + dx, tipY: entry.leg1.tipY + dy
+                            }
+                        );
+                        const newLeg2 = new fabric.Line(
+                            [entry.leg2.x1 + dx, entry.leg2.y1 + dy, entry.leg2.x2 + dx, entry.leg2.y2 + dy],
+                            {
+                                stroke: entry.leg2.stroke, strokeWidth: entry.leg2.strokeWidth, fill: entry.leg2.fill,
+                                strokeUniform: true, selectable: false, evented: false, strokeLineCap: 'round',
+                                perPixelTargetFind: true, calloutId: newId, calloutRole: 'leg2'
+                            }
+                        );
+
+                        const newHead = await cloneFabricObject(entry.head);
+                        newHead.set({ left: entry.head.left + dx, top: entry.head.top + dy, calloutId: newId, calloutRole: 'head', selectable: false, evented: false });
+
+                        const newFrame = await cloneFabricObject(entry.frame);
+                        newFrame.set({ left: entry.frame.left + dx, top: entry.frame.top + dy, calloutId: newId, calloutRole: 'frame', selectable: false, evented: false });
+
+                        const newBox = await cloneFabricObject(entry.box);
+                        newBox.set({ left: entry.box.left + dx, top: entry.box.top + dy, calloutId: newId, calloutRole: 'box' });
+
+                        canvas.add(newLeg1, newLeg2, newFrame, newBox, newHead);
+                        canvas.bringToFront(newHead);
+
+                        calloutRegistry[newId] = { leg1: newLeg1, leg2: newLeg2, head: newHead, frame: newFrame, box: newBox };
+                        updateCalloutGeometry(calloutRegistry[newId]);
+                        newBox.on('changed', () => updateCalloutGeometry(calloutRegistry[newId]));
+                        newBox.on('editing:exited', () => updateCalloutGeometry(calloutRegistry[newId]));
+
+                        pasted.push(newBox);
+                    }
+                }
+
+                if (pasted.length === 0) return;
+                canvas.discardActiveObject();
+                if (pasted.length === 1) {
+                    canvas.setActiveObject(pasted[0]);
+                } else {
+                    canvas.setActiveObject(new fabric.ActiveSelection(pasted, { canvas }));
+                }
+                canvas.requestRenderAll();
+                saveHistory();
+            }
+
             // Paste images straight from the clipboard (Ctrl/Cmd+V) onto the canvas
             document.addEventListener('paste', (e) => {
+                // An internal Ctrl+C/Ctrl+V duplication just handled this same keystroke —
+                // don't also paste whatever image happens to be sitting on the OS clipboard.
+                if (suppressNextOsPaste) {
+                    suppressNextOsPaste = false;
+                    return;
+                }
+
                 // Don't steal a paste meant for an in-progress text edit (callout/text box)
                 const active = canvas.getActiveObject();
                 if (active && active.isEditing) return;
@@ -2919,6 +3291,29 @@
                     e.preventDefault();
                     undo();
                     return;
+                }
+
+                // Don't hijack Ctrl+C/Ctrl+V typed into a toolbar field (color hex, weight, font)
+                const activeTag = document.activeElement && document.activeElement.tagName;
+                const inFormField = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT';
+
+                if (!inFormField && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+                    if (copySelectionToInternalClipboard()) {
+                        // Native copy is left to run too (harmless no-op on a canvas selection)
+                        // so this doesn't block genuine text copying elsewhere on the page.
+                    }
+                    return;
+                }
+
+                if (!inFormField && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+                    const activeObj = canvas.getActiveObject();
+                    if (activeObj && activeObj.isEditing) return; // typing inside a text box — leave alone
+                    if (internalClipboard) {
+                        e.preventDefault();
+                        suppressNextOsPaste = true;
+                        pasteInternalClipboard();
+                        return;
+                    }
                 }
 
                 if (e.key === 'Escape') {
@@ -3258,6 +3653,7 @@
 
             canvas.on('object:scaling', function(options) {
                 updateMultiSelectToolbar();
+                updateImageNameLabel();
                 const obj = options.target;
                 if (obj && obj.calloutRole === 'box') {
                     // Fabric's `padding` (used to draw the selection border out to the padded
