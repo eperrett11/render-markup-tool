@@ -1,0 +1,3550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Render Markup Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+
+    <!-- Supabase (Storage only — used purely as a blob store for shared boards, no auth/DB). -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000000;
+            font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+        }
+
+        .grid-background {
+            background-color: #111111;
+            background-image:
+                linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+            background-size: 40px 40px;
+            background-position: -1px -1px;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 0;
+        }
+
+        #canvas-container {
+            position: relative;
+            width: 100%;
+            height: calc(100vh - 64px); /* Subtract toolbar height */
+            z-index: 10;
+        }
+
+        /* One unified toolbar, hand-rolled plain CSS (not @apply) — the Tailwind CDN's
+           runtime compiler only scans class="" attributes and <style type="text/tailwindcss">
+           blocks, so @apply inside an ordinary <style> tag silently does nothing in a real
+           browser. Every control below shares this same look, matching the old "right cluster"
+           (dark pill, thin border, uppercase gray labels) as the baseline style. */
+        .toolbar-shell {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 10px;
+            padding: 6px 8px;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+
+        .toolbar-divider {
+            width: 1px;
+            height: 26px;
+            background: #374151;
+            margin: 0 6px;
+            flex-shrink: 0;
+        }
+
+        .toolbar-label {
+            font-size: 11px;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .toolbar-value {
+            font-size: 11px;
+            color: #d1d5db;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            width: 30px;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        /* Manual number entry next to a slider — same look as .toolbar-value but editable.
+           Same font as the toolbar labels (not monospace), sized to fit a decimal like "2.5". */
+        .toolbar-number {
+            font-size: 11px;
+            color: #d1d5db;
+            font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            /* box-sizing: content-box so `width` is just the digits, unaffected by the
+               padding/border that border-box (Tailwind's global default) would eat into it */
+            box-sizing: content-box;
+            width: 3ch;
+            text-align: right;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid #374151;
+            border-radius: 5px;
+            padding: 3px 5px;
+            /* Hide the native spinner arrows — plenty of room to type, no need for +/- clutter */
+            -moz-appearance: textfield;
+        }
+        .toolbar-number:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        .toolbar-number::-webkit-inner-spin-button,
+        .toolbar-number::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        /* Smaller thumb (the "dot") on the toolbar sliders — the default browser size feels
+           oversized next to these compact controls. accent-color still drives the track fill. */
+        .toolbar-slider {
+            height: 4px;
+        }
+        .toolbar-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+        }
+        .toolbar-slider::-moz-range-thumb {
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            background: #3b82f6;
+            border: none;
+            cursor: pointer;
+        }
+
+        .toolbar-btn, .toolbar-icon-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            color: #9ca3af;
+            background: transparent;
+            border: none;
+            border-radius: 7px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background-color 120ms ease-out, color 120ms ease-out, transform 120ms ease-out;
+        }
+
+        .toolbar-btn {
+            padding: 7px 10px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .toolbar-btn i { font-size: 13px; }
+        .toolbar-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.07); }
+        .toolbar-btn:active { transform: scale(0.93); }
+        .toolbar-btn.active {
+            color: #60a5fa;
+            background: rgba(59, 130, 246, 0.14);
+            box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.35);
+        }
+
+        .toolbar-icon-btn {
+            width: 34px;
+            height: 34px;
+            flex-shrink: 0;
+        }
+        .toolbar-icon-btn i { font-size: 15px; }
+        .toolbar-icon-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.07); }
+        .toolbar-icon-btn:active { transform: scale(0.9); }
+        .toolbar-icon-btn:disabled { opacity: 0.3; pointer-events: none; }
+        .toolbar-icon-btn.danger:hover { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+
+        .toolbar-btn-primary {
+            color: #fff;
+            background: #2563eb;
+            font-weight: 600;
+        }
+        .toolbar-btn-primary:hover { background: #3b82f6; color: #fff; }
+
+        /* Thin, unobtrusive scrollbar for the overflowing tool row */
+        .tool-scroll::-webkit-scrollbar {
+            height: 4px;
+        }
+        .tool-scroll::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 9999px;
+        }
+        .tool-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #multi-select-toolbar {
+            opacity: 0;
+            transform: translateX(-50%) translateY(4px) scale(0.96);
+            transition: opacity 150ms ease-out, transform 150ms ease-out;
+            pointer-events: none;
+        }
+        #multi-select-toolbar.toolbar-visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0) scale(1);
+            pointer-events: auto;
+        }
+
+        .image-name-label {
+            opacity: 0;
+            /* transform is set inline by JS (translate + a canvas-zoom scale factor, so the
+               label's on-screen size tracks the image's own on-screen size) — only the fade
+               is handled here. */
+            transition: opacity 150ms ease-out;
+        }
+        .image-name-label.label-visible {
+            opacity: 1;
+        }
+
+        /* Hide default file input */
+        input[type="file"] {
+            display: none;
+        }
+
+        /* Custom tooltip — replaces native title="" tooltips (slow, OS-styled, inconsistent) */
+        #app-tooltip {
+            position: fixed;
+            z-index: 200;
+            background: #030712;
+            color: #e5e7eb;
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 0.01em;
+            line-height: 1.3;
+            padding: 5px 9px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+            pointer-events: none;
+            opacity: 0;
+            transform: translateY(-3px);
+            transition: opacity 100ms ease-out, transform 100ms ease-out;
+            max-width: 220px;
+            white-space: nowrap;
+        }
+        #app-tooltip.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body class="font-sans text-gray-200 flex flex-col antialiased">
+
+    <header class="h-16 bg-gray-950/95 backdrop-blur-sm border-b border-gray-800 flex items-center justify-center px-4 z-20 shadow-xl shrink-0">
+        <div class="toolbar-shell tool-scroll" id="main-toolbar">
+            <label class="toolbar-btn toolbar-btn-primary" data-tooltip="Upload one or more images from your device">
+                <i class="fa-solid fa-cloud-arrow-up"></i>
+                <span>Upload</span>
+                <!-- Allow multiple image selection -->
+                <input type="file" id="imageUpload" accept="image/*" multiple>
+            </label>
+            <button id="btn-undo" class="toolbar-icon-btn" data-tooltip="Undo (Ctrl+Z)" disabled>
+                <i class="fa-solid fa-rotate-left"></i>
+            </button>
+            <button id="btn-share" class="toolbar-btn" data-tooltip="Save this board and copy a shareable link">
+                <i class="fa-solid fa-share-nodes"></i>
+                <span>Share</span>
+            </button>
+
+            <div class="toolbar-divider"></div>
+
+            <button class="toolbar-btn active" id="btn-select" data-tooltip="Select & Move">
+                <i class="fa-solid fa-arrow-pointer"></i>
+                <span>Select</span>
+            </button>
+            <button class="toolbar-btn" id="btn-draw" data-tooltip="Freehand Draw">
+                <i class="fa-solid fa-pen"></i>
+                <span>Draw</span>
+            </button>
+            <button class="toolbar-btn" id="btn-arrow" data-tooltip="Draw Arrow">
+                <i class="fa-solid fa-arrow-right"></i>
+                <span>Arrow</span>
+            </button>
+
+            <div class="toolbar-divider"></div>
+
+            <button class="toolbar-btn" id="btn-text" data-tooltip="Add Text">
+                <i class="fa-solid fa-t"></i>
+                <span>Text</span>
+            </button>
+            <button class="toolbar-btn" id="btn-callout" data-tooltip="Add Text Callout">
+                <i class="fa-solid fa-comment-dots"></i>
+                <span>Callout</span>
+            </button>
+
+            <div class="toolbar-divider"></div>
+
+            <button class="toolbar-btn" id="btn-rect" data-tooltip="Add Square">
+                <i class="fa-regular fa-square"></i>
+                <span>Square</span>
+            </button>
+            <button class="toolbar-btn" id="btn-circle" data-tooltip="Add Circle">
+                <i class="fa-regular fa-circle"></i>
+                <span>Circle</span>
+            </button>
+            <button class="toolbar-btn" id="btn-poly" data-tooltip="Add Polygon">
+                <i class="fa-solid fa-draw-polygon"></i>
+                <span>Polygon</span>
+            </button>
+
+            <div class="toolbar-divider"></div>
+
+            <div class="flex items-center gap-1.5 px-1" data-tooltip="Annotation Color">
+                <span class="toolbar-label">Color</span>
+                <input type="color" id="colorPicker" value="#ef4444" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
+            </div>
+
+            <div id="calloutColorDivider" class="hidden toolbar-divider"></div>
+
+            <div id="calloutColorGroup" class="hidden contents">
+                <div class="flex items-center gap-1.5 px-1" data-tooltip="Callout Background Color">
+                    <span class="toolbar-label">BG</span>
+                    <input type="color" id="calloutBgColor" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
+                </div>
+                <div class="flex items-center gap-1.5 px-1" data-tooltip="Callout Font Color">
+                    <span class="toolbar-label">Font</span>
+                    <input type="color" id="calloutFontColor" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
+                </div>
+            </div>
+
+            <div class="toolbar-divider"></div>
+
+            <div class="flex items-center gap-1.5 px-1" data-tooltip="Line Thickness">
+                <span class="toolbar-label">Weight</span>
+                <input type="range" id="lineWidth" min="1" max="20" value="4" class="toolbar-slider w-24 accent-blue-500 cursor-pointer">
+                <input type="number" id="lineWidthNumber" min="1" max="20" value="4" class="toolbar-number">
+            </div>
+
+            <div class="toolbar-divider"></div>
+
+            <div class="flex items-center gap-1.5 px-1" data-tooltip="Font style and size">
+                <span class="toolbar-label">Font</span>
+                <select id="fontFamily" class="bg-gray-800 text-xs text-gray-200 border-none rounded p-1 cursor-pointer outline-none">
+                    <option value="sans-serif">Sans</option>
+                    <option value="serif">Serif</option>
+                    <option value="monospace">Mono</option>
+                </select>
+                <input type="range" id="fontSize" min="10" max="72" value="20" class="toolbar-slider w-24 accent-blue-500 cursor-pointer">
+                <input type="number" id="fontSizeNumber" min="10" max="72" value="20" class="toolbar-number">
+            </div>
+
+            <div class="toolbar-divider"></div>
+
+            <div class="flex items-center gap-1.5 px-1" data-tooltip="Callout/text background opacity">
+                <span class="toolbar-label">Opacity</span>
+                <input type="range" id="opacitySlider" min="0" max="1" step="0.1" value="0.5" class="toolbar-slider w-20 accent-blue-500 cursor-pointer">
+                <input type="number" id="opacityNumber" min="0" max="1" step="0.05" value="0.5" class="toolbar-number">
+            </div>
+
+            <div class="toolbar-divider"></div>
+
+            <button id="btn-fullscreen" class="toolbar-icon-btn" data-tooltip="Toggle Fullscreen">
+                <i class="fa-solid fa-expand" id="fullscreen-icon"></i>
+            </button>
+            <button id="btn-delete" class="toolbar-icon-btn danger" data-tooltip="Delete Selected Object (or press Del)" disabled>
+                <i class="fa-solid fa-trash-can"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="relative flex-1">
+        <div class="grid-background"></div>
+        
+        <div id="drop-overlay" class="absolute inset-0 z-50 hidden flex-col items-center justify-center bg-blue-900/80 backdrop-blur-sm border-4 border-blue-500 border-dashed m-4 rounded-xl pointer-events-none transition-all">
+            <i class="fa-solid fa-cloud-arrow-down text-6xl text-white mb-4 animate-bounce"></i>
+            <h2 class="text-3xl font-bold text-white">Drop Images Here</h2>
+            <p class="text-blue-200 mt-2">Release to add to canvas</p>
+        </div>
+
+        <div id="canvas-container">
+            <canvas id="c"></canvas>
+        </div>
+
+        <div id="multi-select-toolbar" class="absolute z-50 flex bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl p-1.5 gap-1">
+            <div id="multi-only-controls" class="contents">
+            <button id="btn-layout-row" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Organize as Row">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="1" y="4" width="6" height="8" rx="1.4" fill="currentColor"/>
+                    <rect x="9" y="4" width="6" height="8" rx="1.4" fill="currentColor"/>
+                </svg>
+            </button>
+            <button id="btn-layout-col" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Organize as Column">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="4" y="1" width="8" height="6" rx="1.4" fill="currentColor"/>
+                    <rect x="4" y="9" width="8" height="6" rx="1.4" fill="currentColor"/>
+                </svg>
+            </button>
+            <button id="btn-layout-grid" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Organize as Grid">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="1" y="1" width="6" height="6" rx="1.2" fill="currentColor"/>
+                    <rect x="9" y="1" width="6" height="6" rx="1.2" fill="currentColor"/>
+                    <rect x="1" y="9" width="6" height="6" rx="1.2" fill="currentColor"/>
+                    <rect x="9" y="9" width="6" height="6" rx="1.2" fill="currentColor"/>
+                </svg>
+            </button>
+
+            <div class="w-px h-6 bg-gray-700 mx-1 self-center"></div>
+            
+            <button id="btn-align-top" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Align Top">
+                <i class="fa-solid fa-align-left text-sm" style="transform: rotate(90deg);"></i>
+            </button>
+            <button id="btn-align-center" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Align Center">
+                <i class="fa-solid fa-align-center text-sm"></i>
+            </button>
+            <button id="btn-align-bottom" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Align Bottom">
+                <i class="fa-solid fa-align-right text-sm" style="transform: rotate(90deg);"></i>
+            </button>
+
+            <div class="w-px h-6 bg-gray-700 mx-1 self-center"></div>
+
+            <button id="btn-scale-width" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Match Max Width">
+                <i class="fa-solid fa-arrows-left-right text-sm"></i>
+            </button>
+            <button id="btn-scale-height" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Match Max Height">
+                <i class="fa-solid fa-arrows-up-down text-sm"></i>
+            </button>
+            </div>
+
+            <button id="btn-compare" class="hidden flex items-center justify-center gap-1.5 h-8 px-2.5 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="1" y="1" width="14" height="14" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                    <circle cx="8" cy="8" r="2.4" fill="currentColor"/>
+                </svg>
+                <span class="text-xs font-medium" id="btn-compare-label">Compare</span>
+            </button>
+
+            <div class="relative">
+                <button id="btn-reorder" class="flex items-center justify-center gap-1.5 h-8 px-2.5 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors">
+                    <i class="fa-solid fa-layer-group text-sm"></i>
+                    <span class="text-xs font-medium">Reorder</span>
+                </button>
+                <div id="reorder-popup" class="hidden absolute top-full right-0 mt-1.5 flex bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl p-1.5 gap-1 z-50">
+                    <button id="btn-reorder-front" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Bring to Front">
+                        <i class="fa-solid fa-angles-up text-sm"></i>
+                    </button>
+                    <button id="btn-reorder-forward" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Bring Forward">
+                        <i class="fa-solid fa-angle-up text-sm"></i>
+                    </button>
+                    <button id="btn-reorder-backward" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Send Backward">
+                        <i class="fa-solid fa-angle-down text-sm"></i>
+                    </button>
+                    <button id="btn-reorder-back" class="flex items-center justify-center w-8 h-8 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors" data-tooltip="Send to Back">
+                        <i class="fa-solid fa-angles-down text-sm"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="image-name-label" class="image-name-label absolute z-50 bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-md shadow-xl px-2.5 py-1 text-xs text-gray-200 font-medium pointer-events-none whitespace-nowrap"></div>
+
+        <div id="compare-pick-hint" class="hidden absolute z-50 top-4 left-1/2 -translate-x-1/2 bg-gray-950/95 backdrop-blur-sm border border-blue-500 rounded-lg shadow-xl px-4 py-2 text-sm text-gray-100 font-medium pointer-events-none whitespace-nowrap">
+            Click another image to compare it with &mdash; <span class="text-gray-400">Esc to cancel</span>
+        </div>
+
+        <div id="share-toast" class="hidden absolute z-50 top-4 left-1/2 -translate-x-1/2 max-w-md text-center bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl px-4 py-2 text-sm text-gray-100 font-medium pointer-events-none"></div>
+
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // Custom hover tooltips for every [data-tooltip] element — small delay before
+            // showing, clean styling, positioned under the element (these all live in the
+            // header, so above would run off-screen).
+            (function setupTooltips() {
+                const tooltipEl = document.createElement('div');
+                tooltipEl.id = 'app-tooltip';
+                document.body.appendChild(tooltipEl);
+                let showTimer = null;
+
+                function showTooltip(el) {
+                    const text = el.getAttribute('data-tooltip');
+                    if (!text) return;
+                    tooltipEl.textContent = text;
+                    const rect = el.getBoundingClientRect();
+                    const tRect = tooltipEl.getBoundingClientRect();
+                    let left = rect.left + rect.width / 2 - tRect.width / 2;
+                    left = Math.max(6, Math.min(left, window.innerWidth - tRect.width - 6));
+                    tooltipEl.style.left = `${left}px`;
+                    tooltipEl.style.top = `${rect.bottom + 8}px`;
+                    tooltipEl.classList.add('visible');
+                }
+
+                function hideTooltip() {
+                    clearTimeout(showTimer);
+                    tooltipEl.classList.remove('visible');
+                }
+
+                document.querySelectorAll('[data-tooltip]').forEach(el => {
+                    // Restore an accessible name for icon-only buttons now that title="" is gone
+                    if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', el.getAttribute('data-tooltip'));
+                    el.addEventListener('mouseenter', () => {
+                        clearTimeout(showTimer);
+                        showTimer = setTimeout(() => showTooltip(el), 350);
+                    });
+                    el.addEventListener('mouseleave', hideTooltip);
+                    el.addEventListener('mousedown', hideTooltip);
+                });
+            })();
+
+            // Setup Canvas
+            const canvasContainer = document.getElementById('canvas-container');
+            const canvas = new fabric.Canvas('c', {
+                width: canvasContainer.clientWidth,
+                height: canvasContainer.clientHeight,
+                preserveObjectStacking: true, // Ensure objects stay in selected z-index order
+                fireMiddleClick: true, // Enable middle mouse interaction for panning
+                targetFindTolerance: 4, // A little forgiveness for perPixelTargetFind hit tests (callout legs)
+                // Fabric's own default is the four-way "move" cursor over any draggable object —
+                // keep the plain arrow instead, everywhere except the few spots (like the callout
+                // arrowhead) that explicitly opt into 'move' via their own hoverCursor.
+                hoverCursor: 'default',
+                moveCursor: 'default'
+            });
+
+            // Smaller, cleaner selection handles flush with object edges (no padding gap)
+            fabric.Object.prototype.set({
+                cornerColor: '#3b82f6',
+                cornerStrokeColor: '#1d4ed8',
+                borderColor: '#3b82f6',
+                cornerSize: 8,
+                cornerStyle: 'circle',
+                transparentCorners: false,
+                borderScaleFactor: 1.5,
+                padding: 0
+            });
+
+            // State management
+            let currentMode = 'select'; // 'select', 'draw', 'arrow'
+            let currentColor = document.getElementById('colorPicker').value;
+            let currentWidth = parseInt(document.getElementById('lineWidth').value, 10);
+            let currentFont = 'sans-serif';
+            let currentFontSize = 20;
+            let currentOpacity = 0.5;
+            
+            // History State (Undo)
+            let history = [];
+            let currentState = null;
+            let isUndoing = false;
+
+            function saveHistory() {
+                if (isUndoing) return;
+                if (currentState) {
+                    history.push(currentState);
+                    if (history.length > 30) history.shift(); // Keep last 30 actions
+                }
+                // Include callout tags so undo can relink parts and keep the tip anchor correct
+                currentState = JSON.stringify(canvas.toJSON(['calloutId', 'calloutRole', 'tipX', 'tipY']));
+                updateActionButtons();
+            }
+
+            // Keep undo/delete/clear enabled state in sync with canvas contents
+            function updateActionButtons() {
+                document.getElementById('btn-undo').disabled = history.length === 0;
+                document.getElementById('btn-delete').disabled = canvas.getActiveObjects().length === 0;
+            }
+
+            // --- Share (Firebase Storage as a plain JSON blob store) --------------------------
+            // DEMO-GRADE, not production: Storage rules need to allow public read+write with no
+            // auth, so anyone who discovers the project's storage bucket could write junk to it.
+            // Fine for testing with a couple of colleagues; revisit before wider use.
+            //
+            // Project URL + anon key from Supabase Console -> Project Settings -> API. The anon
+            // key is safe to ship client-side (that's its purpose) as long as the bucket's access
+            // policy stays limited to what it needs.
+            const supabaseUrl = "https://nqfqensursvohcgmmrfw.supabase.co";
+            const supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xZnFlbnN1cnN2b2hjZ21tcmZ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMjE5NDksImV4cCI6MjEwNTU5Nzk0OX0.nKi69GWGgcybCEZ1tSArMcKJE7AQFmmgIGqIKfFt4rY";
+            const SUPABASE_BUCKET = "boards";
+            const supabaseEnabled = !!(supabaseUrl && supabaseAnonKey && window.supabase);
+            const supabaseClient = supabaseEnabled ? window.supabase.createClient(supabaseUrl, supabaseAnonKey) : null;
+
+            // Set once a board has been shared or loaded from a share link, so re-sharing (e.g.
+            // after more edits) updates the SAME link instead of minting a new one every time.
+            let currentShareId = new URLSearchParams(window.location.search).get('board') || null;
+
+            const shareToast = document.getElementById('share-toast');
+            let shareToastTimer = null;
+            function showShareToast(text, isError, holdMs) {
+                shareToast.textContent = text;
+                shareToast.classList.remove('hidden', 'border-blue-500', 'border-red-500', 'border-gray-700');
+                shareToast.classList.add(isError ? 'border-red-500' : 'border-blue-500');
+                clearTimeout(shareToastTimer);
+                shareToastTimer = setTimeout(() => shareToast.classList.add('hidden'), holdMs || 3500);
+            }
+
+            // Storage-quota errors don't have one consistent shape across providers (Firebase
+            // Storage uses a 'storage/quota-exceeded' code; Supabase/S3-style backends return an
+            // HTTP 413 or a message mentioning the limit) — so this checks loosely across
+            // whatever fields are present rather than pinning to one provider's exact error shape.
+            function isStorageFullError(err) {
+                const haystack = `${err && err.code || ''} ${err && err.message || ''} ${err && err.status || ''}`.toLowerCase();
+                return haystack.includes('quota') || haystack.includes('limit') || haystack.includes('413')
+                    || (haystack.includes('storage') && (haystack.includes('exceed') || haystack.includes('full')));
+            }
+
+            async function shareBoard() {
+                if (!supabaseEnabled) {
+                    showShareToast('Share is not configured yet — add your Supabase project config in index.html', true);
+                    return;
+                }
+                showShareToast('Saving board…');
+                try {
+                    const id = currentShareId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+                    const json = JSON.stringify(canvas.toJSON(['calloutId', 'calloutRole', 'tipX', 'tipY']));
+                    const { error: uploadError } = await supabaseClient.storage
+                        .from(SUPABASE_BUCKET)
+                        .upload(`${id}.json`, json, { contentType: 'application/json', upsert: true, cacheControl: '0' });
+                    if (uploadError) throw uploadError;
+
+                    currentShareId = id;
+                    const shareUrl = `${window.location.origin}${window.location.pathname}?board=${id}`;
+                    const historyUrl = `${window.location.pathname}?board=${id}${window.location.hash}`;
+                    window.history.replaceState(null, '', historyUrl);
+
+                    try {
+                        await navigator.clipboard.writeText(shareUrl);
+                        showShareToast('Link copied to clipboard!');
+                    } catch (clipErr) {
+                        showShareToast(shareUrl);
+                    }
+                } catch (err) {
+                    console.error('Share failed:', err);
+                    if (isStorageFullError(err)) {
+                        showShareToast('Storage is full — delete some old shared boards to free up space, then try again.', true, 6000);
+                    } else {
+                        showShareToast('Share failed — see console for details', true);
+                    }
+                }
+            }
+
+            async function loadSharedBoard(id) {
+                if (!supabaseEnabled) {
+                    showShareToast('This link needs Share configured in index.html to load', true);
+                    return;
+                }
+                showShareToast('Loading shared board…');
+                try {
+                    const { data } = supabaseClient.storage.from(SUPABASE_BUCKET).getPublicUrl(`${id}.json`);
+                    // no-store + a cache-busting query param: browsers can be stubborn about
+                    // reusing a cached response for this exact URL after the file's been
+                    // re-uploaded (upsert), even with cache:'no-store' alone in some cases.
+                    const res = await fetch(`${data.publicUrl}?t=${Date.now()}`, { cache: 'no-store' });
+                    if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+                    const json = await res.text();
+                    canvas.loadFromJSON(json, function() {
+                        canvas.renderAll();
+                        rebuildCalloutRegistry();
+                        history = [];
+                        currentState = json;
+                        updateActionButtons();
+                        shareToast.classList.add('hidden');
+                    });
+                } catch (err) {
+                    console.error('Load shared board failed:', err);
+                    showShareToast('Could not load that shared board', true);
+                }
+            }
+
+            document.getElementById('btn-share').addEventListener('click', shareBoard);
+
+            if (currentShareId) {
+                loadSharedBoard(currentShareId);
+            }
+
+            // Arrow drawing state
+            let isDrawingArrow = false;
+            let arrowLine, arrowHead;
+
+            // Callout drawing state — click-drag-release: mouse down plants the tip (anchored,
+            // never moves again), drag previews the arrow, release drops the note box there.
+            let isDrawingCallout = false;
+            let calloutLine, calloutHead, calloutBox, activeShape;
+            // calloutId -> { leg1, leg2, head, frame, box }. A kinked (Acrobat-style) two-segment
+            // leader: leg1 runs from the fixed tip to a "knee", leg2 from the knee into the box's
+            // edge. `frame` is the box's visible background+border (never the text itself — a
+            // Textbox's own `stroke` styles its glyphs, not a border, which is why that looked bad).
+            // Tip lives at leg1.tipX/tipY (fixed) — NOT leg1.x1/y1: Fabric silently rewrites a
+            // Line's x1/y1/x2/y2 to be relative to its own center on a toJSON/loadFromJSON
+            // round-trip, so anything read across an undo needs its own tag.
+            let calloutRegistry = {};
+            let calloutCounter = 0;
+            let calloutStickies = []; // callouts dragged along with an underlying image
+
+            // Hand-rolled drag state for grabbing a callout's leader (moves everything rigidly)
+            // or its arrowhead (repositions just the tip) — see the mouse:down handler.
+            let isDraggingCalloutRigid = false;
+            let rigidDragEntry = null, rigidDragStart = null, rigidDragOriginal = null;
+            let isDraggingCalloutTip = false;
+            let tipDragEntry = null;
+            // Grabbing the frame (the padded card background behind the tight text box) drags
+            // the box exactly like grabbing the box itself — tip anchored, arrow re-angles.
+            let isDraggingCalloutFrame = false;
+            let frameDragEntry = null, frameDragStart = null, frameDragOriginalBox = null;
+
+            // Hand-rolled drag for a CompareSlider's divider handle — see hitTestCompareHandle()
+            // for why this can't just be the object's own fabric Control.
+            let isDraggingCompareHandle = false;
+            let compareDragTarget = null;
+
+            // "Pick a partner" flow: clicking Compare with just one image selected arms this,
+            // and the next click on a DIFFERENT image completes the pair (any other click —
+            // same image again, empty canvas, Escape — cancels it).
+            let isPickingCompareTarget = false;
+            let comparePickSource = null;
+            let comparePickHoverTarget = null;
+
+            // Polygon drawing state
+            let polyPoints = [];
+            let polyLines = [];
+            let activePolyLine = null;
+
+            // Shape Drawing (Drag-to-size) State
+            let isDrawingShape = false;
+            let shapeStart = { x: 0, y: 0 };
+            
+            // Sticky annotations state
+            let stickyOffsets = [];
+            let isDraggingSticky = false;
+
+            // Smart-guide style alignment snap (InDesign/Photoshop style) — always on, applied
+            // only while dragging an image, against other objects' edges/centers. No UI toggle.
+            let guideLines = [];
+            let activeGuideTypes = [];
+
+            function drawGuide(type, pos) {
+                const color = '#3b82f6'; 
+                let line;
+                const zoom = canvas.getZoom();
+                
+                if (type === 'vertical') {
+                    line = new fabric.Line([pos, -99999, pos, 99999], {
+                        stroke: color, strokeWidth: 1 / zoom, selectable: false, evented: false, strokeDashArray: [5, 5]
+                    });
+                } else {
+                    line = new fabric.Line([-99999, pos, 99999, pos], {
+                        stroke: color, strokeWidth: 1 / zoom, selectable: false, evented: false, strokeDashArray: [5, 5]
+                    });
+                }
+                canvas.add(line);
+                guideLines.push(line);
+                activeGuideTypes.push(type);
+                line.moveTo(canvas.getObjects().length); 
+            }
+
+            function clearGuidelines() {
+                guideLines.forEach(l => canvas.remove(l));
+                guideLines = [];
+                activeGuideTypes = [];
+            }
+
+            function snapToObjects(activeObj) {
+                // Ignore snapping to lines, callout leader/arrowhead parts, the active object, or active guides
+                const canvasObjects = canvas.getObjects().filter(o =>
+                    o !== activeObj && !guideLines.includes(o) && o.type !== 'line' &&
+                    o.calloutRole !== 'head'
+                );
+                if (canvasObjects.length === 0) return { snappedX: false, snappedY: false };
+
+                // Force a coords refresh first — getBoundingRect(true) can otherwise return a
+                // stale, one-frame-behind rect while dragging, which made the snap target drift
+                // instead of lock (the main cause of the jittery feel).
+                activeObj.setCoords();
+                const objB = activeObj.getBoundingRect(true); // true = raw canvas coords, ignoring pan/zoom
+
+                // Constant on-screen snap distance regardless of zoom level (Photoshop/InDesign-style)
+                const threshold = 10 / canvas.getZoom();
+
+                let snapX = null;
+                let snapY = null;
+                let minDiffX = threshold;
+                let minDiffY = threshold;
+                let lineX = null;
+                let lineY = null;
+
+                const activeEdgesX = [
+                    { type: 'left', val: objB.left },
+                    { type: 'center', val: objB.left + objB.width / 2 },
+                    { type: 'right', val: objB.left + objB.width }
+                ];
+                const activeEdgesY = [
+                    { type: 'top', val: objB.top },
+                    { type: 'center', val: objB.top + objB.height / 2 },
+                    { type: 'bottom', val: objB.top + objB.height }
+                ];
+
+                canvasObjects.forEach(target => {
+                    const targetB = target.getBoundingRect(true);
+                    const targetEdgesX = [
+                        { type: 'left', val: targetB.left },
+                        { type: 'center', val: targetB.left + targetB.width / 2 },
+                        { type: 'right', val: targetB.left + targetB.width }
+                    ];
+                    const targetEdgesY = [
+                        { type: 'top', val: targetB.top },
+                        { type: 'center', val: targetB.top + targetB.height / 2 },
+                        { type: 'bottom', val: targetB.top + targetB.height }
+                    ];
+
+                    activeEdgesX.forEach(aEdge => {
+                        targetEdgesX.forEach(tEdge => {
+                            if (aEdge.type !== tEdge.type) return;
+                            const diff = Math.abs(aEdge.val - tEdge.val);
+                            if (diff < minDiffX) {
+                                minDiffX = diff;
+                                if (aEdge.type === 'left') snapX = tEdge.val;
+                                if (aEdge.type === 'center') snapX = tEdge.val - objB.width / 2;
+                                if (aEdge.type === 'right') snapX = tEdge.val - objB.width;
+                                lineX = tEdge.val;
+                            }
+                        });
+                    });
+
+                    activeEdgesY.forEach(aEdge => {
+                        targetEdgesY.forEach(tEdge => {
+                            if (aEdge.type !== tEdge.type) return;
+                            const diff = Math.abs(aEdge.val - tEdge.val);
+                            if (diff < minDiffY) {
+                                minDiffY = diff;
+                                if (aEdge.type === 'top') snapY = tEdge.val;
+                                if (aEdge.type === 'center') snapY = tEdge.val - objB.height / 2;
+                                if (aEdge.type === 'bottom') snapY = tEdge.val - objB.height;
+                                lineY = tEdge.val;
+                            }
+                        });
+                    });
+                });
+
+                let snappedX = false;
+                let snappedY = false;
+
+                // Apply adjustments preserving object origin offsets
+                if (snapX !== null) {
+                    activeObj.set('left', snapX + (activeObj.left - objB.left));
+                    drawGuide('vertical', lineX);
+                    snappedX = true;
+                }
+                if (snapY !== null) {
+                    activeObj.set('top', snapY + (activeObj.top - objB.top));
+                    drawGuide('horizontal', lineY);
+                    snappedY = true;
+                }
+                if (snappedX || snappedY) activeObj.setCoords();
+                return { snappedX, snappedY };
+            }
+
+            // Arrowhead (and callout tip) triangle size for a given stroke weight — floored so
+            // thin lines still get a decently sized, easy-to-grab head.
+            function arrowHeadSize(width) {
+                return Math.max(width * 6, 26);
+            }
+
+            // --- Callout geometry helpers -------------------------------------------------
+
+            // Fabric's Textbox `padding` only affects selection-handle spacing, not layout — it
+            // adds no real space around the text. To get an actual bled, breathing-room card, the
+            // frame is sized as the text's tight bounding box PLUS this margin on every side.
+            const CALLOUT_PADDING = 16;
+
+            // New callouts default to white outline/leader/arrowhead regardless of the shared
+            // color picker — they read as a clean note against a photo. Still fully customizable
+            // afterward via syncCalloutColor().
+            const CALLOUT_DEFAULT_COLOR = '#ffffff';
+
+            // --- Compare Slider (before/after image comparison) ----------------------------
+            //
+            // A single custom fabric.Object subclass — NOT a fabric.Group of separately
+            // tracked parts (the pattern `calloutRegistry` uses, which caused real bugs this
+            // session because align/distribute/multi-select code has to remember to keep every
+            // sibling part in sync by hand). Being one object means move/scale/delete/multi-
+            // select and canvas.toJSON()/loadFromJSON() (undo/redo) all just work the same way
+            // they do for any other shape, with no registry to maintain.
+            //
+            // Both source images are drawn CROPPED-TO-FILL (like CSS `object-fit: cover`)
+            // rather than letterboxed. Tradeoff: content near the edges of an image whose
+            // aspect ratio doesn't match the widget can get cropped off, but there are no
+            // mismatched-color bars, and — since the crop is recomputed fresh from the
+            // widget's current on-screen size on every render — resizing the widget (even
+            // non-uniformly, by dragging a side handle) never stretches/distorts either image;
+            // it only changes how much of each image's edges are cropped.
+            fabric.CompareSlider = fabric.util.createClass(fabric.Object, {
+                type: 'compareSlider',
+
+                // Custom _render below recomputes the crop from the object's OWN current
+                // scale every frame (see the ctx.scale(1/scaleX, 1/scaleY) note there) —
+                // fabric's object cache would instead pre-render once at scale 1 and stretch
+                // the cached bitmap, silently undoing that compensation. Not worth caching
+                // anyway: this is a rarely-numerous, interactively-edited widget, not a
+                // large static shape.
+                objectCaching: false,
+
+                initialize: function(imgAEl, imgBEl, options) {
+                    options = options || {};
+                    this.imgAEl = imgAEl;
+                    this.imgBEl = imgBEl;
+                    this.imgASrc = options.imgASrc || (imgAEl && imgAEl.src) || '';
+                    this.imgBSrc = options.imgBSrc || (imgBEl && imgBEl.src) || '';
+                    this.imgAName = options.imgAName || '';
+                    this.imgBName = options.imgBName || '';
+                    this.divider = options.divider !== undefined ? options.divider : 0.5;
+                    this.callSuper('initialize', options);
+                },
+
+                // Crops `img` to fill a dw×dh box without distorting it (CSS object-fit: cover),
+                // then draws it at (dx, dy) in the CALLER's current (already-transformed) space.
+                _drawCover: function(ctx, img, dx, dy, dw, dh) {
+                    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+                    if (!iw || !ih || dw <= 0 || dh <= 0) return;
+                    const srcAspect = iw / ih, dstAspect = dw / dh;
+                    let sx, sy, sw, sh;
+                    if (srcAspect > dstAspect) {
+                        sh = ih; sw = ih * dstAspect; sx = (iw - sw) / 2; sy = 0;
+                    } else {
+                        sw = iw; sh = iw / dstAspect; sx = 0; sy = (ih - sh) / 2;
+                    }
+                    ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+                },
+
+                // A small translucent tag pinned to a bottom corner, so it's always clear which
+                // source image is which even after the widget's been moved/resized far from the
+                // originals — name on top, its pixel resolution in smaller text below. `align`
+                // picks which corner (x, y) is: 'left' grows the tag rightward from x, 'right'
+                // grows it leftward.
+                _drawNameLabel: function(ctx, text, resText, h, x, y, align) {
+                    if (!text) return;
+                    const fontSize = Math.max(10, Math.min(15, h * 0.045));
+                    const resFontSize = fontSize * 0.78;
+                    ctx.save();
+                    ctx.textBaseline = 'alphabetic';
+                    ctx.textAlign = 'left';
+
+                    const padX = fontSize * 0.55, padY = fontSize * 0.38;
+                    const lineGap = fontSize * 0.2;
+
+                    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+                    const nameWidth = ctx.measureText(text).width;
+                    ctx.font = `500 ${resFontSize}px Inter, sans-serif`;
+                    const resWidth = resText ? ctx.measureText(resText).width : 0;
+
+                    const boxW = Math.max(nameWidth, resWidth) + padX * 2;
+                    const boxH = fontSize + padY * 2 + (resText ? lineGap + resFontSize : 0);
+                    const boxX = align === 'left' ? x : x - boxW;
+                    const boxY = y - boxH;
+
+                    ctx.beginPath();
+                    if (ctx.roundRect) ctx.roundRect(boxX, boxY, boxW, boxH, 4);
+                    else ctx.rect(boxX, boxY, boxW, boxH);
+                    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+                    ctx.fill();
+
+                    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillText(text, boxX + padX, boxY + padY + fontSize * 0.82);
+
+                    if (resText) {
+                        ctx.font = `500 ${resFontSize}px Inter, sans-serif`;
+                        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+                        ctx.fillText(resText, boxX + padX, boxY + padY + fontSize + lineGap + resFontSize * 0.78);
+                    }
+                    ctx.restore();
+                },
+
+                // The divider grip: a horizontal pill (not a plain dot) with a pair of inward-
+                // facing chevrons baked in, so it visibly reads as a drag-to-compare control
+                // rather than just a decorative marker. Drawn slightly see-through (globalAlpha)
+                // so it reads as an overlay control rather than opaque widget chrome, matching
+                // how similar grab handles look in other image-compare UIs.
+                _drawHandle: function(ctx, cx, cy, r, color) {
+                    const w = r * 2.8, h = r * 1.8, rad = h / 2;
+
+                    // Soft drop shadow first, in its own save/restore so it doesn't smear onto
+                    // the fill/stroke/chevrons drawn after it.
+                    ctx.save();
+                    ctx.beginPath();
+                    if (ctx.roundRect) ctx.roundRect(cx - w / 2, cy - h / 2, w, h, rad);
+                    else ctx.rect(cx - w / 2, cy - h / 2, w, h);
+                    ctx.shadowColor = 'rgba(0,0,0,0.45)';
+                    ctx.shadowBlur = r * 0.9;
+                    ctx.shadowOffsetY = r * 0.15;
+                    ctx.fillStyle = 'rgba(0,0,0,0.001)';
+                    ctx.fill();
+                    ctx.restore();
+
+                    ctx.save();
+                    ctx.globalAlpha = 0.92;
+                    ctx.beginPath();
+                    if (ctx.roundRect) ctx.roundRect(cx - w / 2, cy - h / 2, w, h, rad);
+                    else ctx.rect(cx - w / 2, cy - h / 2, w, h);
+
+                    // Subtle vertical gradient instead of a flat fill reads as a proper 3D grip
+                    // rather than a flat sticker pasted on the image.
+                    const grad = ctx.createLinearGradient(0, cy - h / 2, 0, cy + h / 2);
+                    grad.addColorStop(0, '#ffffff');
+                    grad.addColorStop(1, '#e2e8f0');
+                    ctx.fillStyle = grad;
+                    ctx.fill();
+                    ctx.strokeStyle = 'rgba(15,23,42,0.18)';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                    ctx.restore();
+
+                    ctx.save();
+                    ctx.strokeStyle = 'rgba(30,41,59,0.75)';
+                    ctx.lineWidth = Math.max(1.4, h * 0.12);
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    const armW = h * 0.2, armH = h * 0.24, gap = w * 0.19;
+
+                    ctx.beginPath();
+                    ctx.moveTo(cx - gap + armW, cy - armH);
+                    ctx.lineTo(cx - gap, cy);
+                    ctx.lineTo(cx - gap + armW, cy + armH);
+                    ctx.stroke();
+
+                    ctx.beginPath();
+                    ctx.moveTo(cx + gap - armW, cy - armH);
+                    ctx.lineTo(cx + gap, cy);
+                    ctx.lineTo(cx + gap - armW, cy + armH);
+                    ctx.stroke();
+
+                    ctx.restore();
+                },
+
+                _render: function(ctx) {
+                    const scaleX = this.scaleX || 1, scaleY = this.scaleY || 1;
+                    ctx.save();
+                    // Fabric already applied this object's own scaleX/scaleY to the context
+                    // before calling _render. Undo that here and redraw everything in final
+                    // on-screen pixel units instead — otherwise a non-uniform resize (a side
+                    // handle, scaleX !== scaleY) would stretch the cropped images into ellipses
+                    // rather than just cropping more/less, and the divider/handle stroke would
+                    // thin out under scale exactly like the bug fixed elsewhere in this file
+                    // (see the strokeUniform notes on the other shapes).
+                    ctx.scale(1 / scaleX, 1 / scaleY);
+
+                    const w = this.width * scaleX, h = this.height * scaleY;
+                    const left = -w / 2, top = -h / 2;
+
+                    // Image B's name tag is drawn right on top of it, BEFORE image A's clipped
+                    // layer goes down — so as the divider slides toward B's side, A's own
+                    // (opaque) pixels paint over the tag exactly the way they paint over the rest
+                    // of B, hiding it. Image A's tag is drawn inside A's own clip region for the
+                    // mirror case: sliding the divider away from A shrinks that clip until the
+                    // tag itself falls outside it and disappears.
+                    const describeRes = (img) => {
+                        if (!img) return '';
+                        const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+                        return ih ? `${iw} × ${ih} · ${(iw / ih).toFixed(2)}` : `${iw} × ${ih}`;
+                    };
+                    const resA = describeRes(this.imgAEl);
+                    const resB = describeRes(this.imgBEl);
+
+                    if (this.imgBEl) this._drawCover(ctx, this.imgBEl, left, top, w, h);
+                    this._drawNameLabel(ctx, this.imgBName, resB, h, left + w - 6, top + h - 6, 'right');
+
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(left, top, w * this.divider, h);
+                    ctx.clip();
+                    if (this.imgAEl) this._drawCover(ctx, this.imgAEl, left, top, w, h);
+                    this._drawNameLabel(ctx, this.imgAName, resA, h, left + 6, top + h - 6, 'left');
+                    ctx.restore();
+
+                    // Divider line + handle re-use the shared stroke/strokeWidth properties —
+                    // the app's existing color-picker and weight-slider handlers already fall
+                    // through to plain `stroke`/`strokeWidth` for any object type they don't
+                    // otherwise recognize, so this widget gets toolbar sync for free.
+                    const dx = left + w * this.divider;
+                    const strokeColor = this.stroke || CALLOUT_DEFAULT_COLOR;
+                    const weight = Math.max(1, this.strokeWidth || 2);
+
+                    // Soft shadow under the line so it stays visible crossing both light and
+                    // dark image content, then the actual color line on top.
+                    ctx.save();
+                    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                    ctx.shadowBlur = Math.max(3, weight * 1.5);
+                    ctx.strokeStyle = strokeColor;
+                    ctx.lineWidth = weight;
+                    ctx.beginPath();
+                    ctx.moveTo(dx, top);
+                    ctx.lineTo(dx, top + h);
+                    ctx.stroke();
+                    ctx.restore();
+
+                    const handleR = Math.max(13, weight * 2.4);
+                    this._drawHandle(ctx, dx, top + h / 2, handleR, strokeColor);
+
+                    ctx.restore();
+                },
+
+                toObject: function(propertiesToInclude) {
+                    return fabric.util.object.extend(this.callSuper('toObject', propertiesToInclude), {
+                        divider: this.divider,
+                        imgASrc: this.imgASrc,
+                        imgBSrc: this.imgBSrc,
+                        imgAName: this.imgAName,
+                        imgBName: this.imgBName
+                    });
+                }
+            });
+
+            // Async reconstruction on canvas.loadFromJSON (undo/redo, and any future save/load)
+            // — the same pattern fabric.Image.fromObject itself uses for its own async image
+            // loading, so it plugs into loadFromJSON's existing multi-object async wait with no
+            // changes needed anywhere else.
+            fabric.CompareSlider.fromObject = function(object, callback) {
+                fabric.util.loadImage(object.imgASrc, function(imgAEl) {
+                    fabric.util.loadImage(object.imgBSrc, function(imgBEl) {
+                        callback(new fabric.CompareSlider(imgAEl, imgBEl, object));
+                    });
+                });
+            };
+
+            // Custom control for the draggable divider handle. This reuses fabric's own control
+            // hit-testing/drag lifecycle (positionHandler/actionHandler) instead of hand-rolled
+            // canvas mouse-event tracking — it's only live while this object alone is the active
+            // selection, so it can never be confused with an activeSelection drag. The visible
+            // handle graphic is already baked into _render above (so it's always visible, even
+            // unselected); this control only supplies the drag hit-region + cursor, so its own
+            // `render` is a no-op to avoid drawing a second, potentially-misaligned circle.
+            fabric.CompareSlider.prototype.controls = Object.assign({}, fabric.Object.prototype.controls, {
+                dividerHandle: new fabric.Control({
+                    positionHandler: function(dim, finalMatrix, fabricObject) {
+                        // Mirrors the default corner-control math (this.x * dim.x, y: 0) but
+                        // with a dynamic fraction instead of a fixed corner — dim.x is already
+                        // the object's on-screen width (raw width * scaleX, zoom-corrected).
+                        const point = new fabric.Point((fabricObject.divider - 0.5) * dim.x, 0);
+                        return fabric.util.transformPoint(point, finalMatrix);
+                    },
+                    actionHandler: function(eventData, transform, x, y) {
+                        const target = transform.target;
+                        // toLocalPoint rotates+translates into the object's local axes but does
+                        // NOT divide out scale, so it ranges over ±(width*scaleX)/2 — matching
+                        // positionHandler's own dim.x convention above.
+                        const localPoint = target.toLocalPoint(new fabric.Point(x, y), 'center', 'center');
+                        const scaledWidth = target.width * (target.scaleX || 1);
+                        let frac = scaledWidth ? (localPoint.x / scaledWidth + 0.5) : 0.5;
+                        frac = Math.max(0.015, Math.min(0.985, frac));
+                        if (target.divider !== frac) target.set('divider', frac);
+                        return true;
+                    },
+                    cursorStyleHandler: function() { return 'ew-resize'; },
+                    render: function() {},
+                    // Roomier than fabric's default corner hit box (13px) to match the wider
+                    // pill-shaped handle drawn in _render.
+                    sizeX: 46,
+                    sizeY: 30,
+                    actionName: 'modifyDivider'
+                })
+            });
+
+            // While an object is part of a multi-selection (ActiveSelection), Fabric rewrites
+            // its left/top — and therefore getBoundingRect()'s position — to be relative to the
+            // selection's own center instead of the canvas. Width/height stay correct; only the
+            // position is wrong. calcTransformMatrix() correctly composes the full parent chain
+            // regardless of grouping, so use that to recover the true canvas-absolute position.
+            // Without this, editing a callout's box while multiple callouts are selected together
+            // (e.g. changing stroke weight for all of them at once) sends the frame/leader flying
+            // to a wrong spot on screen.
+            function getAbsoluteBoundingRect(obj) {
+                const rect = obj.getBoundingRect(true);
+                if (!obj.group) return rect;
+                const absCenter = fabric.util.transformPoint({ x: 0, y: 0 }, obj.calcTransformMatrix());
+                return {
+                    left: absCenter.x - rect.width / 2,
+                    top: absCenter.y - rect.height / 2,
+                    width: rect.width,
+                    height: rect.height
+                };
+            }
+
+            // Fabric only honors a control's own actionHandler (our dividerHandle drag) on an
+            // object that was ALREADY the active selection before this click — a fresh click on
+            // an unselected-but-selectable object always falls back to a plain move, no matter
+            // where on it you click (confirmed against fabric's own _setupCurrentTransform: the
+            // alreadySelected flag gates which actionHandler gets used). That would force a
+            // select-then-drag two-step just to use the slider, so this hand-rolled hit-test lets
+            // a single click-drag land on the handle even the very first time — same trick this
+            // file already uses for the callout leader/frame (see the mouse:down handler below).
+            function hitTestCompareHandle(obj, pointer) {
+                if (obj.type !== 'compareSlider') return false;
+                const weight = Math.max(1, obj.strokeWidth || 2);
+                const handleR = Math.max(13, weight * 2.4);
+                // Matches the pill footprint _drawHandle() actually draws — see the scale-
+                // neutralization note in _render(): because that math cancels the object's own
+                // scaleX/scaleY, the handle's rendered size in canvas-world units is exactly
+                // handleR-derived, independent of the object's current scale.
+                const halfW = (handleR * 2.8) / 2 + 6, halfH = (handleR * 1.8) / 2 + 6;
+
+                // (divider - 0.5) * width is the handle's position in the object's own RAW
+                // (unscaled) local coordinate space — calcTransformMatrix() maps that straight to
+                // true canvas/world coordinates, the same space canvas.getPointer() returns.
+                const localPoint = new fabric.Point((obj.divider - 0.5) * obj.width, 0);
+                const handlePos = fabric.util.transformPoint(localPoint, obj.calcTransformMatrix());
+
+                const angle = fabric.util.degreesToRadians(obj.angle || 0);
+                const dx = pointer.x - handlePos.x, dy = pointer.y - handlePos.y;
+                const cos = Math.cos(-angle), sin = Math.sin(-angle);
+                const localDx = dx * cos - dy * sin, localDy = dx * sin + dy * cos;
+                return Math.abs(localDx) <= halfW && Math.abs(localDy) <= halfH;
+            }
+
+            function getCalloutFrameRect(box) {
+                const rect = getAbsoluteBoundingRect(box);
+                const p = CALLOUT_PADDING;
+                return { left: rect.left - p, top: rect.top - p, width: rect.width + p * 2, height: rect.height + p * 2 };
+            }
+
+            // Where to park a callout's box (its CENTER, since box uses originX/Y: 'center') so
+            // the whole card sits completely outside imgBounds, with some wiggle room. Picks
+            // whichever of the 4 edges (left/right/top/bottom) the click is actually closest to
+            // — always, even if that edge is tight against the canvas boundary. (An earlier
+            // version skipped a side that didn't have ~100px of clearance on screen, but since
+            // images are almost always placed just below the toolbar, "top" rarely had that much
+            // headroom and this silently fell back to left/right every time.)
+            function computeOffImagePosition(imgBounds, refX, refY) {
+                const margin = 40; // wiggle room between the image edge and the card
+                const frameWidthEstimate = 190 + CALLOUT_PADDING * 2;
+                const frameHeightEstimate = 60; // rough single-line default text + padding
+                const halfFrameWidth = frameWidthEstimate / 2;
+                const halfFrameHeight = frameHeightEstimate / 2;
+
+                const distances = [
+                    { side: 'left', dist: refX - imgBounds.left },
+                    { side: 'right', dist: imgBounds.left + imgBounds.width - refX },
+                    { side: 'top', dist: refY - imgBounds.top },
+                    { side: 'bottom', dist: imgBounds.top + imgBounds.height - refY }
+                ].sort((a, b) => a.dist - b.dist);
+
+                const side = distances[0].side;
+
+                let dropX, dropY;
+                if (side === 'left' || side === 'right') {
+                    dropX = side === 'right'
+                        ? imgBounds.left + imgBounds.width + margin + halfFrameWidth
+                        : imgBounds.left - margin - halfFrameWidth;
+                    dropY = Math.min(Math.max(refY, imgBounds.top + 40), imgBounds.top + imgBounds.height - 40);
+                } else {
+                    dropY = side === 'bottom'
+                        ? imgBounds.top + imgBounds.height + margin + halfFrameHeight
+                        : imgBounds.top - margin - halfFrameHeight;
+                    dropX = Math.min(Math.max(refX, imgBounds.left + 40), imgBounds.left + imgBounds.width - 40);
+                }
+                return { dropX, dropY, side };
+            }
+
+            // Which edge of the image a callout's card is currently parked against, inferred
+            // from its own position (so we don't need to persist this anywhere).
+            function classifyCalloutSide(entry, imgBounds) {
+                const frameRect = getCalloutFrameRect(entry.box);
+                const cx = frameRect.left + frameRect.width / 2;
+                const cy = frameRect.top + frameRect.height / 2;
+                if (cx < imgBounds.left) return 'left';
+                if (cx > imgBounds.left + imgBounds.width) return 'right';
+                if (cy < imgBounds.top) return 'top';
+                if (cy > imgBounds.top + imgBounds.height) return 'bottom';
+                return null;
+            }
+
+            // Whenever a new callout is auto-parked against an edge of an image, re-stack EVERY
+            // callout already on that same edge in tip order — otherwise a later callout can
+            // land ahead of an earlier one whose tip is actually further along, and their leader
+            // lines cross. Each box still prefers to sit level with its own tip; it only gets
+            // pushed past whatever's already there ahead of it.
+            function relayoutCalloutsForImageEdge(image, side) {
+                const imgBounds = image.getBoundingRect(true);
+                const edgeEntries = Object.values(calloutRegistry).filter(entry => {
+                    if (!entry.box || !entry.leg1 || !entry.frame) return false;
+                    if (!pointInRect(entry.leg1.tipX, entry.leg1.tipY, imgBounds)) return false;
+                    return classifyCalloutSide(entry, imgBounds) === side;
+                });
+                if (edgeEntries.length < 2) return;
+
+                const gap = 8;
+                if (side === 'left' || side === 'right') {
+                    edgeEntries.sort((a, b) => a.leg1.tipY - b.leg1.tipY);
+                    let prevBottom = imgBounds.top + 40;
+                    edgeEntries.forEach(entry => {
+                        const half = getCalloutFrameRect(entry.box).height / 2;
+                        const center = Math.max(entry.leg1.tipY, prevBottom + half);
+                        entry.box.set({ top: center });
+                        entry.box.setCoords();
+                        updateCalloutGeometry(entry);
+                        prevBottom = center + half + gap;
+                    });
+                } else {
+                    edgeEntries.sort((a, b) => a.leg1.tipX - b.leg1.tipX);
+                    let prevRight = imgBounds.left + 40;
+                    edgeEntries.forEach(entry => {
+                        const half = getCalloutFrameRect(entry.box).width / 2;
+                        const center = Math.max(entry.leg1.tipX, prevRight + half);
+                        entry.box.set({ left: center });
+                        entry.box.setCoords();
+                        updateCalloutGeometry(entry);
+                        prevRight = center + half + gap;
+                    });
+                }
+            }
+
+            // Kinked (Acrobat-style) leader geometry: a diagonal leg from the tip to a "knee",
+            // then a level leg straight into one edge of the note — instead of one diagonal
+            // line running straight into the middle of the note. The note can now sit beside
+            // (left/right) OR above/below the image, so pick whichever pair of edges actually
+            // separates the tip from the box: the axis with the bigger outside gap.
+            function getCalloutKinkPoints(frameRect, tip) {
+                const rect = frameRect;
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+                const horizontalGap = tip.x < rect.left ? rect.left - tip.x
+                    : (tip.x > rect.left + rect.width ? tip.x - (rect.left + rect.width) : 0);
+                const verticalGap = tip.y < rect.top ? rect.top - tip.y
+                    : (tip.y > rect.top + rect.height ? tip.y - (rect.top + rect.height) : 0);
+
+                if (horizontalGap >= verticalGap) {
+                    const onLeft = tip.x < cx;
+                    const anchorX = onLeft ? rect.left : rect.left + rect.width;
+                    const margin = Math.min(14, rect.height / 2);
+                    const anchorY = Math.max(rect.top + margin, Math.min(rect.top + rect.height - margin, tip.y));
+                    // Scale the level "flag" segment with distance so the kink stays visible on
+                    // long leaders instead of shrinking to an imperceptible sliver next to the box.
+                    const dist = Math.abs(anchorX - tip.x);
+                    const legLength = Math.min(80, Math.max(28, dist * 0.35));
+                    const knee = { x: onLeft ? anchorX - legLength : anchorX + legLength, y: anchorY };
+                    return { anchor: { x: anchorX, y: anchorY }, knee };
+                } else {
+                    const onTop = tip.y < cy;
+                    const anchorY = onTop ? rect.top : rect.top + rect.height;
+                    const margin = Math.min(14, rect.width / 2);
+                    const anchorX = Math.max(rect.left + margin, Math.min(rect.left + rect.width - margin, tip.x));
+                    const dist = Math.abs(anchorY - tip.y);
+                    const legLength = Math.min(80, Math.max(28, dist * 0.35));
+                    const knee = { x: anchorX, y: onTop ? anchorY - legLength : anchorY + legLength };
+                    return { anchor: { x: anchorX, y: anchorY }, knee };
+                }
+            }
+
+            // Re-anchor the leader/arrowhead/frame to the box's current position and size,
+            // keeping the tip fixed. Called on every box move/resize/text-edit.
+            function updateCalloutGeometry(entry) {
+                if (!entry || !entry.leg1 || !entry.leg2 || !entry.head || !entry.box || !entry.frame) return;
+                const tip = { x: entry.leg1.tipX, y: entry.leg1.tipY };
+                const frameRect = getCalloutFrameRect(entry.box);
+                const { anchor, knee } = getCalloutKinkPoints(frameRect, tip);
+
+                // Re-assert x1/y1 as absolute too, self-healing the line after any reload
+                entry.leg1.set({ x1: tip.x, y1: tip.y, x2: knee.x, y2: knee.y });
+                entry.leg1.setCoords();
+                entry.leg2.set({ x1: knee.x, y1: knee.y, x2: anchor.x, y2: anchor.y });
+                entry.leg2.setCoords();
+
+                const dx = tip.x - knee.x;
+                const dy = tip.y - knee.y;
+                const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                entry.head.set({ left: tip.x, top: tip.y, angle: angle + 90 });
+                entry.head.setCoords();
+
+                // Frame tracks the box's tight text box plus real padding (axis-aligned), so the
+                // background+border always bleeds edge-to-edge around the text with breathing
+                // room, instead of hugging the text lines the way Textbox's own backgroundColor
+                // (or its non-functional `padding`) would. Left/top are NOT stroke-compensated
+                // here — the canvas stroke is centered on this path regardless, so shifting the
+                // path itself would only throw off the padding's symmetry around the text.
+                entry.frame.set({
+                    left: frameRect.left, top: frameRect.top, width: frameRect.width, height: frameRect.height,
+                    scaleX: 1, scaleY: 1, angle: 0
+                });
+                entry.frame.setCoords();
+            }
+
+            function rectsOverlap(a, b) {
+                return !(a.left + a.width <= b.left || b.left + b.width <= a.left ||
+                         a.top + a.height <= b.top || b.top + b.height <= a.top);
+            }
+
+            function pointInRect(x, y, r) {
+                return x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height;
+            }
+
+            // Nudge a callout box away from any other callout box it now overlaps, then
+            // re-angle its line/arrowhead to match — called when a callout drag is released.
+            function resolveCalloutOverlap(movedEntry) {
+                if (!movedEntry || !movedEntry.box) return;
+                const others = Object.values(calloutRegistry).filter(e => e.box && e.box !== movedEntry.box);
+                const gap = 8; // breathing room between adjacent cards
+                let guard = 0;
+                while (guard < 200) {
+                    const rect = getCalloutFrameRect(movedEntry.box);
+                    const collision = others.find(e => rectsOverlap(rect, getCalloutFrameRect(e.box)));
+                    if (!collision) break;
+                    const otherRect = getCalloutFrameRect(collision.box);
+                    const dx = (rect.left + rect.width / 2) - (otherRect.left + otherRect.width / 2);
+                    const dy = (rect.top + rect.height / 2) - (otherRect.top + otherRect.height / 2);
+                    // Callouts parked outside the same image share the exact same dropX (see
+                    // computeOffImagePosition), so dx is routinely exactly 0 — never resolve
+                    // that case horizontally (it would walk the box back toward the image);
+                    // jump vertically past the colliding card instead. Whichever axis it
+                    // resolves on, jump the EXACT distance needed to fully clear that card in
+                    // one step — a small fixed nudge (the old approach) could take more steps
+                    // than the guard allows once several cards are already stacked, leaving
+                    // visible overlap behind.
+                    if (dx === 0) {
+                        const dir = dy >= 0 ? 1 : -1;
+                        const needed = otherRect.height / 2 + rect.height / 2 + gap;
+                        movedEntry.box.set({ top: movedEntry.box.top + (dir * needed - dy) });
+                    } else {
+                        const dir = dx >= 0 ? 1 : -1;
+                        const needed = otherRect.width / 2 + rect.width / 2 + gap;
+                        movedEntry.box.set({ left: movedEntry.box.left + (dir * needed - dx) });
+                    }
+                    movedEntry.box.setCoords();
+                    guard++;
+                }
+                updateCalloutGeometry(movedEntry);
+            }
+
+            // Custom calloutId/calloutRole properties don't survive object identity across an
+            // undo (canvas.loadFromJSON rebuilds fresh objects), so relink them by tag.
+            function rebuildCalloutRegistry() {
+                calloutRegistry = {};
+                canvas.getObjects().forEach(obj => {
+                    if (!obj.calloutId || !obj.calloutRole) return;
+                    if (!calloutRegistry[obj.calloutId]) calloutRegistry[obj.calloutId] = {};
+                    calloutRegistry[obj.calloutId][obj.calloutRole] = obj;
+                });
+            }
+
+            // Leader/arrowhead/border color — the shared "Color" swatch. Background fill and
+            // text color are independent (syncCalloutBgColor / syncCalloutFontColor below).
+            function syncCalloutColor(calloutId, color) {
+                const entry = calloutRegistry[calloutId];
+                if (!entry) return;
+                if (entry.leg1) entry.leg1.set({ stroke: color, fill: color });
+                if (entry.leg2) entry.leg2.set({ stroke: color, fill: color });
+                if (entry.head) entry.head.set({ fill: color });
+                if (entry.frame) entry.frame.set({ stroke: color });
+            }
+
+            // Pulls the r/g/b out of whatever's currently on the frame's fill (an rgba() string)
+            // so a change to just ONE of {color, opacity} doesn't clobber the other.
+            function calloutFrameRgb(entry) {
+                const fallback = { r: 255, g: 255, b: 255 };
+                if (!entry.frame || typeof entry.frame.fill !== 'string') return fallback;
+                const m = entry.frame.fill.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/);
+                return m ? { r: +m[1], g: +m[2], b: +m[3] } : fallback;
+            }
+
+            function hexToRgb(hex) {
+                const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '');
+                return m ? { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) } : { r: 255, g: 255, b: 255 };
+            }
+
+            function rgbToHex({ r, g, b }) {
+                const c = v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0');
+                return `#${c(r)}${c(g)}${c(b)}`;
+            }
+
+            // The card's background fill lives on the frame (never the text itself) and its
+            // color/opacity are set independently, so both compose into one rgba() string —
+            // reading the other's current value back out each time keeps them from clobbering.
+            function syncCalloutBgColor(calloutId, hex) {
+                const entry = calloutRegistry[calloutId];
+                if (!entry || !entry.frame) return;
+                const rgb = hexToRgb(hex);
+                const alphaMatch = typeof entry.frame.fill === 'string' ? entry.frame.fill.match(/,\s*([\d.]+)\)\s*$/) : null;
+                const alpha = alphaMatch ? parseFloat(alphaMatch[1]) : currentOpacity;
+                entry.frame.set({ fill: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})` });
+            }
+
+            function syncCalloutFontColor(calloutId, hex) {
+                const entry = calloutRegistry[calloutId];
+                if (!entry || !entry.box) return;
+                entry.box.set({ fill: hex });
+            }
+
+            function syncCalloutWidth(calloutId, width) {
+                const entry = calloutRegistry[calloutId];
+                if (!entry) return;
+                if (entry.leg1) { entry.leg1.set({ strokeWidth: width }); entry.leg1.setCoords(); }
+                if (entry.leg2) { entry.leg2.set({ strokeWidth: width }); entry.leg2.setCoords(); }
+                if (entry.head) {
+                    const size = arrowHeadSize(width);
+                    entry.head.set({ width: size, height: size });
+                    entry.head.setCoords();
+                }
+                // A thicker border should grow evenly on all sides of the card, same as any
+                // other shape — setCoords() alone won't do that here since the frame's own
+                // left/top/width/height are fully recomputed from the box anyway.
+                if (entry.frame) { entry.frame.set({ strokeWidth: width }); updateCalloutGeometry(entry); }
+            }
+
+            // The visible card background lives on the frame, not the tight text box — route
+            // opacity changes there so the whole card fades, not a sliver behind the text.
+            function syncCalloutOpacity(calloutId, opacity) {
+                const entry = calloutRegistry[calloutId];
+                if (!entry || !entry.frame) return;
+                const rgb = calloutFrameRgb(entry);
+                entry.frame.set({ fill: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${opacity})` });
+            }
+
+            // Pan state
+            let isPanning = false;
+            let lastPosX, lastPosY;
+
+            function resizeCanvas() {
+                canvas.setWidth(canvasContainer.clientWidth);
+                canvas.setHeight(canvasContainer.clientHeight);
+                canvas.renderAll();
+            }
+
+            window.addEventListener('resize', resizeCanvas);
+
+            const btnFullscreen = document.getElementById('btn-fullscreen');
+            const fullscreenIcon = document.getElementById('fullscreen-icon');
+            
+            function toggleFullscreen() {
+                if (!document.fullscreenElement) {
+                    // Enter fullscreen on the main container so toolbar is still visible
+                    document.documentElement.requestFullscreen().catch(err => {
+                        console.error(`Error attempting to enable fullscreen: ${err.message}`);
+                    });
+                } else {
+                    if (document.exitFullscreen) {
+                        document.exitFullscreen();
+                    }
+                }
+            }
+
+            btnFullscreen.addEventListener('click', toggleFullscreen);
+
+            // Listen for fullscreen changes to update icon and resize canvas
+            document.addEventListener('fullscreenchange', () => {
+                if (document.fullscreenElement) {
+                    fullscreenIcon.classList.remove('fa-expand');
+                    fullscreenIcon.classList.add('fa-compress');
+                } else {
+                    fullscreenIcon.classList.remove('fa-compress');
+                    fullscreenIcon.classList.add('fa-expand');
+                }
+                
+                // Allow a tiny delay for the browser layout to settle before resizing canvas
+                setTimeout(resizeCanvas, 50);
+            });
+
+
+            document.getElementById('colorPicker').addEventListener('input', (e) => {
+                currentColor = e.target.value;
+                canvas.freeDrawingBrush.color = currentColor;
+                
+                // Update selected object(s) color
+                const activeObjects = canvas.getActiveObjects();
+                if (activeObjects.length) {
+                    activeObjects.forEach(obj => {
+                        if (obj.calloutId) {
+                            // A callout's box/frame/leg/head all carry calloutId — the shared
+                            // swatch only drives the leader/arrowhead/border now that background
+                            // and font color have their own independent pickers (see
+                            // calloutBgColor/calloutFontColor below), so skip the generic
+                            // fill/stroke branches entirely and let syncCalloutColor handle it.
+                        } else if (obj.type === 'i-text' || obj.type === 'textbox') {
+                            obj.set('fill', currentColor);
+                        } else if (obj.type === 'group') {
+                            // Arrows are a Line+Triangle group — recolor the parts, not the group itself
+                            obj.getObjects().forEach(subObj => {
+                                subObj.set('stroke', currentColor);
+                                if (subObj.fill) subObj.set('fill', currentColor);
+                            });
+                        } else if (obj.type === 'path' || obj.type === 'line') {
+                            obj.set('stroke', currentColor);
+                            if (obj.fill) obj.set('fill', currentColor); // Update arrowheads
+                        } else {
+                            obj.set('stroke', currentColor);
+                        }
+                        // Keep a callout's leader/arrowhead/border matching this swatch
+                        if (obj.calloutId) syncCalloutColor(obj.calloutId, currentColor);
+                    });
+                    canvas.renderAll();
+                }
+            });
+
+            // Background/font color only apply to whichever single callout is currently
+            // selected (any of its box/frame/leg/head parts all carry the same calloutId) —
+            // shown/hidden and populated by updateCalloutColorControls(), hooked to selection
+            // events further down.
+            document.getElementById('calloutBgColor').addEventListener('input', (e) => {
+                const obj = canvas.getActiveObject();
+                if (obj && obj.calloutId) syncCalloutBgColor(obj.calloutId, e.target.value);
+                canvas.renderAll();
+            });
+            document.getElementById('calloutFontColor').addEventListener('input', (e) => {
+                const obj = canvas.getActiveObject();
+                if (obj && obj.calloutId) syncCalloutFontColor(obj.calloutId, e.target.value);
+                canvas.renderAll();
+            });
+
+            const lineWidthSlider = document.getElementById('lineWidth');
+            const lineWidthNumber = document.getElementById('lineWidthNumber');
+
+            function applyLineWidth(value) {
+                currentWidth = Math.min(20, Math.max(1, Math.round(value)));
+                lineWidthSlider.value = currentWidth;
+                lineWidthNumber.value = currentWidth;
+                canvas.freeDrawingBrush.width = currentWidth;
+
+                // Update selected object(s) line width
+                const activeObjects = canvas.getActiveObjects();
+                if (activeObjects.length) {
+                    activeObjects.forEach(obj => {
+                        if (obj.type === 'group') {
+                            // Safely update arrows without scaling bounding box incorrectly
+                            obj.getObjects().forEach(subObj => {
+                                if (subObj.type === 'line') {
+                                    subObj.set('strokeWidth', currentWidth);
+                                } else if (subObj.type === 'triangle') {
+                                    const size = arrowHeadSize(currentWidth);
+                                    subObj.set({ width: size, height: size });
+                                }
+                                // The group recalculates its own bounds FROM each child's cached
+                                // coords — without refreshing those first, addWithUpdate() below
+                                // reads stale child geometry and the group's own selection box
+                                // never resizes to match the new (thicker/bigger-headed) arrow.
+                                subObj.setCoords();
+                            });
+                            obj.addWithUpdate();
+                            obj.setCoords();
+                        } else if (obj.calloutId) {
+                            // Keep a callout's box border matching its arrow's thickness
+                            syncCalloutWidth(obj.calloutId, currentWidth);
+                        } else if (obj.type !== 'i-text' && obj.type !== 'textbox') {
+                            // Rect/Circle/Path use a top-left origin, so left/top mark the
+                            // UNSTROKED path corner — Fabric doesn't shift it when strokeWidth
+                            // changes, which made a thicker weight look like it only grew toward
+                            // the bottom-right. Shift left/top by half the delta to keep the
+                            // shape's center fixed and the growth even on every side. Center-origin
+                            // shapes (lines, polygons) don't need this — they're already symmetric.
+                            const prevStroke = obj.strokeWidth || 0;
+                            const delta = currentWidth - prevStroke;
+                            const shiftX = obj.originX === 'center' ? 0 : delta / 2;
+                            const shiftY = obj.originY === 'center' ? 0 : delta / 2;
+                            obj.set({
+                                strokeWidth: currentWidth,
+                                left: obj.left - shiftX,
+                                top: obj.top - shiftY
+                            });
+                            obj.setCoords();
+                        }
+                    });
+                    canvas.renderAll();
+                }
+            }
+
+            lineWidthSlider.addEventListener('input', (e) => applyLineWidth(e.target.value));
+            lineWidthNumber.addEventListener('input', (e) => {
+                if (e.target.value === '') return;
+                applyLineWidth(e.target.value);
+            });
+
+            document.getElementById('fontFamily').addEventListener('change', (e) => {
+                currentFont = e.target.value;
+                updateSelectedText({ fontFamily: currentFont });
+            });
+
+            const fontSizeSlider = document.getElementById('fontSize');
+            const fontSizeNumber = document.getElementById('fontSizeNumber');
+
+            function applyFontSize(value) {
+                currentFontSize = Math.min(72, Math.max(10, Math.round(value)));
+                fontSizeSlider.value = currentFontSize;
+                fontSizeNumber.value = currentFontSize;
+                updateSelectedText({ fontSize: currentFontSize });
+            }
+
+            fontSizeSlider.addEventListener('input', (e) => applyFontSize(e.target.value));
+            fontSizeNumber.addEventListener('input', (e) => {
+                if (e.target.value === '') return;
+                applyFontSize(e.target.value);
+            });
+
+            const opacitySlider = document.getElementById('opacitySlider');
+            const opacityNumber = document.getElementById('opacityNumber');
+
+            function applyOpacity(value) {
+                currentOpacity = Math.min(1, Math.max(0, parseFloat(value)));
+                opacitySlider.value = currentOpacity;
+                opacityNumber.value = currentOpacity;
+                const activeObjects = canvas.getActiveObjects();
+                if (activeObjects.length) {
+                    activeObjects.forEach(obj => {
+                        // The visible card background is the frame behind the box, not the box
+                        // itself, and it also carries the background COLOR — recompose rather
+                        // than overwrite so an independently-chosen bg color survives.
+                        if (obj.calloutId) {
+                            syncCalloutOpacity(obj.calloutId, currentOpacity);
+                        } else {
+                            // Whole-object fade — images, shapes, text, the compare widget, etc.
+                            obj.set('opacity', currentOpacity);
+                        }
+                    });
+                    canvas.renderAll();
+                }
+            }
+
+            opacitySlider.addEventListener('input', (e) => applyOpacity(e.target.value));
+            opacityNumber.addEventListener('input', (e) => {
+                if (e.target.value === '') return;
+                applyOpacity(e.target.value);
+            });
+
+            function updateSelectedText(props) {
+                const activeObjects = canvas.getActiveObjects();
+                if (activeObjects.length) {
+                    activeObjects.forEach(obj => {
+                        if (obj.type === 'i-text' || obj.type === 'textbox') {
+                            obj.set(props);
+                            // Font size/family changes reflow the text — keep the callout's frame in sync
+                            if (obj.calloutId) updateCalloutGeometry(calloutRegistry[obj.calloutId]);
+                        } else if (obj.type === 'group') {
+                             obj.getObjects().forEach(subObj => {
+                                 if (subObj.type === 'textbox') subObj.set(props);
+                             });
+                             obj.addWithUpdate();
+                        }
+                    });
+                    canvas.renderAll();
+                }
+            }
+
+            // Reflect the selected object's own current styling into the toolbar controls —
+            // the reverse of applyLineWidth/applyFontSize/applyOpacity/colorPicker, which push
+            // the toolbar's values ONTO the selection. Without this, the sliders/inputs keep
+            // showing whatever was last touched instead of what the newly-selected object
+            // actually has.
+            function syncToolbarFromSelection() {
+                const obj = canvas.getActiveObjects()[0];
+                if (!obj) return;
+
+                const isText = obj.type === 'i-text' || obj.type === 'textbox';
+                const groupLine = obj.type === 'group' ? obj.getObjects().find(o => o.type === 'line') : null;
+                const groupTextbox = obj.type === 'group' ? obj.getObjects().find(o => o.type === 'textbox') : null;
+
+                // Color: text fill, arrow's line stroke, callout's leader stroke, or plain stroke
+                let color = null;
+                if (isText) color = obj.fill;
+                else if (groupLine) color = groupLine.stroke;
+                else if (obj.calloutId) {
+                    const entry = calloutRegistry[obj.calloutId];
+                    if (entry && entry.leg1) color = entry.leg1.stroke;
+                } else if (obj.stroke) color = obj.stroke;
+                if (typeof color === 'string' && /^#/.test(color)) {
+                    currentColor = color;
+                    document.getElementById('colorPicker').value = color;
+                }
+
+                // Weight: callout's leader thickness, arrow's line thickness, or plain strokeWidth
+                let weight = null;
+                if (groupLine) weight = groupLine.strokeWidth;
+                else if (obj.calloutId) {
+                    const entry = calloutRegistry[obj.calloutId];
+                    if (entry && entry.leg1) weight = entry.leg1.strokeWidth;
+                } else if (!isText && typeof obj.strokeWidth === 'number') {
+                    weight = obj.strokeWidth;
+                }
+                if (typeof weight === 'number') {
+                    // Floor at 1 same as applyLineWidth's own clamp — a stroke thinner than that
+                    // reads as invisible, and a stray 0 (e.g. from an older saved object) would
+                    // otherwise show up unclamped here since this path never went through it.
+                    currentWidth = Math.max(1, Math.round(weight));
+                    lineWidthSlider.value = currentWidth;
+                    lineWidthNumber.value = currentWidth;
+                }
+
+                // Font family/size: direct on a text object, or the textbox inside an arrow group
+                const textSource = isText ? obj : groupTextbox;
+                if (textSource) {
+                    if (textSource.fontFamily) {
+                        currentFont = textSource.fontFamily;
+                        document.getElementById('fontFamily').value = textSource.fontFamily;
+                    }
+                    if (typeof textSource.fontSize === 'number') {
+                        currentFontSize = Math.round(textSource.fontSize);
+                        fontSizeSlider.value = currentFontSize;
+                        fontSizeNumber.value = currentFontSize;
+                    }
+                }
+
+                // Opacity: the callout card's own background lives on the frame, not the box —
+                // anything else (images, shapes, text, the compare widget) just uses its own
+                // whole-object opacity directly.
+                if (obj.calloutId) {
+                    const entry = calloutRegistry[obj.calloutId];
+                    const match = entry && entry.frame && typeof entry.frame.fill === 'string'
+                        ? entry.frame.fill.match(/rgba?\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)/)
+                        : null;
+                    if (match) {
+                        currentOpacity = parseFloat(match[1]);
+                        opacitySlider.value = currentOpacity;
+                        opacityNumber.value = currentOpacity;
+                    }
+                } else if (typeof obj.opacity === 'number') {
+                    currentOpacity = obj.opacity;
+                    opacitySlider.value = currentOpacity;
+                    opacityNumber.value = currentOpacity;
+                }
+
+                updateCalloutColorControls(obj);
+            }
+
+            const calloutColorGroup = document.getElementById('calloutColorGroup');
+            const calloutColorDivider = document.getElementById('calloutColorDivider');
+            const calloutBgColorInput = document.getElementById('calloutBgColor');
+            const calloutFontColorInput = document.getElementById('calloutFontColor');
+
+            // Shows the Background/Font swatches only while a single callout part is selected,
+            // populated from its current colors — the mirror of applyOpacity/colorPicker/etc,
+            // which push the toolbar's values ONTO the selection instead.
+            function updateCalloutColorControls(obj) {
+                const entry = obj && obj.calloutId ? calloutRegistry[obj.calloutId] : null;
+                const show = !!entry;
+                calloutColorGroup.classList.toggle('hidden', !show);
+                calloutColorDivider.classList.toggle('hidden', !show);
+                if (!show) return;
+
+                calloutBgColorInput.value = rgbToHex(calloutFrameRgb(entry));
+                if (entry.box && typeof entry.box.fill === 'string' && /^#/.test(entry.box.fill)) {
+                    calloutFontColorInput.value = entry.box.fill;
+                }
+            }
+
+            canvas.on('selection:created', syncToolbarFromSelection);
+            canvas.on('selection:updated', syncToolbarFromSelection);
+            canvas.on('selection:cleared', () => updateCalloutColorControls(null));
+
+            // Setup initial brush
+            canvas.freeDrawingBrush.color = currentColor;
+            canvas.freeDrawingBrush.width = currentWidth;
+
+            // Save initial state
+            setTimeout(saveHistory, 100);
+
+            // Save history when objects are modified; a released callout drag also gets a
+            // pass to avoid overlapping other callout notes, re-angling its arrow to match.
+            canvas.on('object:modified', function(e) {
+                const obj = e.target;
+                if (obj && obj.calloutRole === 'box' && obj.calloutId) {
+                    const entry = calloutRegistry[obj.calloutId];
+                    if (entry) resolveCalloutOverlap(entry);
+                }
+                saveHistory();
+            });
+            canvas.on('path:created', function(e) {
+                // Same scale-independent stroke fix as the other shapes — a freehand stroke
+                // shouldn't visually thin out if the resulting path is later scaled.
+                if (e.path) e.path.set('strokeUniform', true);
+                saveHistory();
+            });
+
+            // Infinite Zoom (Mouse Wheel)
+            canvas.on('mouse:wheel', function(opt) {
+                var delta = opt.e.deltaY;
+                var zoom = canvas.getZoom();
+                zoom *= 0.999 ** delta;
+                if (zoom > 50) zoom = 50; // Max zoom
+                if (zoom < 0.01) zoom = 0.01; // Min zoom
+                canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
+                updateMultiSelectToolbar(); // Keep toolbar pinned
+                updateImageNameLabel();
+                opt.e.preventDefault();
+                opt.e.stopPropagation();
+            });
+
+            const dropOverlay = document.getElementById('drop-overlay');
+
+            // Tracked purely so Ctrl/Cmd+V paste (below) can drop the pasted image under the
+            // cursor's last known position instead of always defaulting to canvas center.
+            let lastMouseClientX = null, lastMouseClientY = null;
+            document.addEventListener('mousemove', (e) => {
+                lastMouseClientX = e.clientX;
+                lastMouseClientY = e.clientY;
+            });
+
+            // Needed for some browsers (like Safari) to allow dropping correctly
+            document.addEventListener('dragenter', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+
+            // Handle drag over the entire document
+            document.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // Check if the dragged items are files
+                if (e.dataTransfer.types && e.dataTransfer.types.includes('Files')) {
+                    dropOverlay.classList.remove('hidden');
+                    dropOverlay.classList.add('flex');
+                }
+            });
+
+            document.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // Check relatedTarget to ensure we are actually leaving the browser window
+                if (!e.relatedTarget) {
+                    dropOverlay.classList.add('hidden');
+                    dropOverlay.classList.remove('flex');
+                }
+            });
+
+            document.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                dropOverlay.classList.add('hidden');
+                dropOverlay.classList.remove('flex');
+
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    // Calculate drop coordinates manually relative to the canvas container
+                    // This prevents crashes caused by dropping onto the global blue overlay
+                    const rect = document.getElementById('canvas-container').getBoundingClientRect();
+                    const vpt = canvas.viewportTransform;
+                    
+                    let dropPoint = null;
+                    if (e.clientX >= rect.left && e.clientX <= rect.right && 
+                        e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                        dropPoint = {
+                            x: (e.clientX - rect.left - vpt[4]) / vpt[0],
+                            y: (e.clientY - rect.top - vpt[5]) / vpt[3]
+                        };
+                    }
+                    processFiles(e.dataTransfer.files, dropPoint);
+                }
+            });
+
+            // Reusable function to handle file loading (used by both input and drop)
+            function processFiles(files, dropPointer = null) {
+                let offset = 0; // Used to stagger multiple images so they don't perfectly overlap
+                let dropSequence = 0; // Staggers the drop-in animation so multiple images pop in one by one
+
+                // Use getWidth() and getHeight() to avoid NaN positioning errors
+                const cWidth = canvas.getWidth();
+                const cHeight = canvas.getHeight();
+
+                Array.from(files).forEach(file => {
+                    // Safety check that works even if OS hides MIME type during drag-and-drop
+                    const isImage = (file.type && file.type.startsWith('image/')) || file.name.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                    if (!isImage) return;
+
+                    const reader = new FileReader();
+                    reader.onload = function(event) {
+                        // Use native HTML Image element for ultra-reliable base64 loading
+                        const imgElement = new Image();
+                        imgElement.onload = function() {
+                            const img = new fabric.Image(imgElement);
+                            img.sourceFileName = file.name;
+
+                            // Scale down large images initially to fit canvas nicely
+                            const maxW = cWidth * 0.8;
+                            const maxH = cHeight * 0.8;
+                            if (img.width > maxW || img.height > maxH) {
+                                img.scaleToWidth(maxW);
+                                if (img.getScaledHeight() > maxH) {
+                                    img.scaleToHeight(maxH);
+                                }
+                            }
+
+                            // Calculate target drop location. If defaulting to center, 
+                            // make sure it drops in the VISUAL center of current pan/zoom
+                            const vpt = canvas.viewportTransform;
+                            let targetX = (cWidth / 2 - vpt[4]) / vpt[0];
+                            let targetY = (cHeight / 2 - vpt[5]) / vpt[3];
+
+                            if (dropPointer && typeof dropPointer.x === 'number' && !isNaN(dropPointer.x)) {
+                                targetX = dropPointer.x;
+                                targetY = dropPointer.y;
+                            }
+
+                            // Apply coordinates and properties. Land it slightly small/transparent
+                            // and animate up to full size/opacity — a quick, one-by-one "drop in".
+                            const finalScaleX = img.scaleX;
+                            const finalScaleY = img.scaleY;
+                            img.set({
+                                left: targetX + offset,
+                                top: targetY + offset,
+                                originX: 'center',
+                                originY: 'center',
+                                opacity: 0,
+                                scaleX: finalScaleX * 0.92,
+                                scaleY: finalScaleY * 0.92
+                            });
+
+                            offset += 30; // Shift the next image by 30px so it's visible
+
+                            canvas.add(img);
+
+                            // Keep image below annotations, but above older images
+                            const objects = canvas.getObjects();
+                            let lowestAnnotationIndex = -1;
+                            for (let i = 0; i < objects.length - 1; i++) {
+                                if (objects[i].type !== 'image') {
+                                    lowestAnnotationIndex = i;
+                                    break;
+                                }
+                            }
+
+                            if (lowestAnnotationIndex !== -1) {
+                                img.moveTo(lowestAnnotationIndex);
+                            }
+
+                            canvas.setActiveObject(img);
+
+                            const dropDelay = (dropSequence++) * 55;
+                            setTimeout(() => {
+                                const render = () => canvas.requestRenderAll();
+                                img.animate('opacity', 1, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render });
+                                img.animate('scaleX', finalScaleX, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render });
+                                img.animate('scaleY', finalScaleY, { duration: 160, easing: fabric.util.ease.easeOutQuad, onChange: render, onComplete: () => saveHistory() });
+                            }, dropDelay);
+                        };
+                        
+                        // Set source AFTER defining onload to prevent caching race conditions
+                        imgElement.src = event.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                });
+                setMode('select', 'btn-select');
+            }
+
+            const toolBtns = document.querySelectorAll('.toolbar-btn');
+            
+            function setMode(mode, btnId) {
+                if (currentMode === mode) return;
+
+                if (currentMode === 'polygon') {
+                    finishPolygon(true); // Complete or cancel drawing if switching tools
+                }
+
+                // Clean up an in-progress callout drag if switching away
+                if (currentMode === 'callout' && isDrawingCallout) {
+                    canvas.remove(calloutLine, calloutHead);
+                    isDrawingCallout = false;
+                    calloutLine = null; calloutHead = null;
+                }
+                
+                // Clean up incomplete arrow if switching away
+                if (currentMode === 'arrow' && isDrawingArrow) {
+                    canvas.remove(arrowLine, arrowHead);
+                    isDrawingArrow = false;
+                }
+
+                currentMode = mode;
+                
+                // Update UI Buttons
+                toolBtns.forEach(btn => btn.classList.remove('active'));
+                if (btnId) document.getElementById(btnId).classList.add('active');
+
+                // Reset canvas states
+                canvas.isDrawingMode = (mode === 'draw');
+                
+                if (mode === 'select') {
+                    // Enable object selection and interaction
+                    canvas.defaultCursor = 'default';
+                    canvas.selection = true;
+                    applySelectableInteractivity();
+                } else {
+                    // Disable selection while using any specific drawing/dropping tool
+                    canvas.defaultCursor = 'crosshair';
+                    canvas.selection = false;
+                    canvas.forEachObject(o => {
+                        o.selectable = false;
+                        o.evented = false;
+                    });
+                    canvas.discardActiveObject().requestRenderAll();
+                }
+            }
+
+            function applySelectableInteractivity() {
+                canvas.forEachObject(o => {
+                    if (o.calloutRole === 'leg1' || o.calloutRole === 'leg2') {
+                        // Clickable (grabbing the leader moves the whole callout) but never
+                        // independently fabric-selectable — that was letting the leader legs
+                        // get dragged off on their own. No "move" cursor here — that affordance
+                        // is reserved for the arrowhead tip below.
+                        o.selectable = false;
+                        o.evented = true;
+                        o.hoverCursor = 'default';
+                        return;
+                    }
+                    if (o.calloutRole === 'head') {
+                        // The tip — the one place a "move" cursor should appear, since this
+                        // is what repositions where the arrow is pointing.
+                        o.selectable = false;
+                        o.evented = true;
+                        o.hoverCursor = 'move';
+                        return;
+                    }
+                    if (o.calloutRole === 'frame') {
+                        // Visible card background/border behind the box — never fabric-selectable
+                        // on its own, but evented so clicks/drags on the padded margin (which
+                        // looks like part of the card) still grab the box, not fall through.
+                        o.selectable = false;
+                        o.evented = true;
+                        return;
+                    }
+                    o.selectable = true;
+                    o.evented = true;
+                });
+            }
+
+            document.getElementById('btn-select').addEventListener('click', () => setMode('select', 'btn-select'));
+            document.getElementById('btn-draw').addEventListener('click', () => setMode('draw', 'btn-draw'));
+            document.getElementById('btn-arrow').addEventListener('click', () => setMode('arrow', 'btn-arrow'));
+            document.getElementById('btn-rect').addEventListener('click', () => setMode('rect', 'btn-rect'));
+            document.getElementById('btn-circle').addEventListener('click', () => setMode('circle', 'btn-circle'));
+            document.getElementById('btn-poly').addEventListener('click', () => setMode('polygon', 'btn-poly'));
+            document.getElementById('btn-text').addEventListener('click', () => setMode('text', 'btn-text'));
+            document.getElementById('btn-callout').addEventListener('click', () => setMode('callout', 'btn-callout'));
+
+            function finishPolygon(skipModeChange = false) {
+                if (polyPoints.length < 3) {
+                    // Cancel if not enough points to make a shape
+                    clearPolygonDraft();
+                    if (!skipModeChange) setMode('select', 'btn-select');
+                    return;
+                }
+                
+                if (activePolyLine) {
+                    canvas.remove(activePolyLine);
+                    activePolyLine = null;
+                }
+                
+                // Clone points before clearing the draft lines to prevent disappearing
+                const finalPoints = [...polyPoints];
+                
+                // Remove visual guides
+                clearPolygonDraft();
+                
+                // To keep the final shape perfectly where it was drawn without Fabric's 
+                // default offset behavior, we calculate the exact bounding box and center.
+                const minX = Math.min(...finalPoints.map(p => p.x));
+                const minY = Math.min(...finalPoints.map(p => p.y));
+                const maxX = Math.max(...finalPoints.map(p => p.x));
+                const maxY = Math.max(...finalPoints.map(p => p.y));
+                
+                // Map canvas coordinates to relative shape coordinates
+                const relativePoints = finalPoints.map(p => ({
+                    x: p.x - minX - (maxX - minX) / 2,
+                    y: p.y - minY - (maxY - minY) / 2
+                }));
+                
+                // Generate the final polygon shape exactly in place
+                const poly = new fabric.Polygon(relativePoints, {
+                    left: minX + (maxX - minX) / 2,
+                    top: minY + (maxY - minY) / 2,
+                    originX: 'center',
+                    originY: 'center',
+                    fill: 'transparent',
+                    stroke: currentColor,
+                    strokeWidth: currentWidth,
+                    strokeUniform: true, // see Rect above — keeps stroke weight scale-independent
+                    strokeLineJoin: 'round',
+                    strokeLineCap: 'round',
+                    cornerColor: '#3b82f6', borderColor: '#3b82f6', transparentCorners: false
+                });
+
+                canvas.add(poly);
+                canvas.setActiveObject(poly);
+                saveHistory();
+                if (!skipModeChange) setMode('select', 'btn-select');
+            }
+
+            // Escape ends the line where the mouse currently is, as an open polyline —
+            // it does NOT close the shape back to the first point like finishPolygon() does.
+            function finishPolygonOpen() {
+                if (activePolyLine) {
+                    polyPoints.push({ x: activePolyLine.x2, y: activePolyLine.y2 });
+                }
+
+                if (polyPoints.length < 2) {
+                    clearPolygonDraft();
+                    setMode('select', 'btn-select');
+                    return;
+                }
+
+                const finalPoints = [...polyPoints];
+                clearPolygonDraft();
+
+                const minX = Math.min(...finalPoints.map(p => p.x));
+                const minY = Math.min(...finalPoints.map(p => p.y));
+                const maxX = Math.max(...finalPoints.map(p => p.x));
+                const maxY = Math.max(...finalPoints.map(p => p.y));
+
+                const relativePoints = finalPoints.map(p => ({
+                    x: p.x - minX - (maxX - minX) / 2,
+                    y: p.y - minY - (maxY - minY) / 2
+                }));
+
+                const line = new fabric.Polyline(relativePoints, {
+                    left: minX + (maxX - minX) / 2,
+                    top: minY + (maxY - minY) / 2,
+                    originX: 'center',
+                    originY: 'center',
+                    fill: 'transparent',
+                    stroke: currentColor,
+                    strokeWidth: currentWidth,
+                    strokeUniform: true, // see Rect above — keeps stroke weight scale-independent
+                    strokeLineJoin: 'round',
+                    strokeLineCap: 'round'
+                });
+
+                canvas.add(line);
+                canvas.setActiveObject(line);
+                saveHistory();
+                setMode('select', 'btn-select');
+            }
+
+            function clearPolygonDraft() {
+                polyLines.forEach(l => canvas.remove(l));
+                if (activePolyLine) {
+                    canvas.remove(activePolyLine);
+                    activePolyLine = null;
+                }
+                polyLines = [];
+                polyPoints = [];
+            }
+
+            canvas.on('mouse:down', function(o) {
+                const evt = o.e;
+                
+                // Handle Panning (Middle click or Alt+Drag)
+                if (evt.altKey === true || evt.button === 1 || evt.button === 2) {
+                    evt.preventDefault(); // Stop browser auto-scroll behaviors
+                    isPanning = true;
+                    canvas.selection = false;
+                    lastPosX = evt.clientX;
+                    lastPosY = evt.clientY;
+                    return;
+                }
+
+                // Mid "pick a partner" flow (Compare clicked with one image selected): a click
+                // on a DIFFERENT image completes the pair; anything else — the same image again,
+                // empty canvas, some other object — just cancels picking rather than also acting
+                // on that click, so the gesture stays predictable.
+                if (isPickingCompareTarget) {
+                    const clickedImage = o.target && o.target.type === 'image' ? o.target : null;
+                    const source = comparePickSource;
+                    cancelComparePicking();
+                    if (clickedImage && clickedImage !== source) {
+                        createCompareWidget(source, clickedImage);
+                    }
+                    return;
+                }
+
+                // While actively typing in a callout/text box, a click inside it is placing the
+                // text cursor or extending a selection — let Fabric handle that natively instead
+                // of treating it as a canvas click (which, in callout mode, would otherwise plant
+                // a brand new callout right under the cursor).
+                const activeObj = canvas.getActiveObject();
+                if (activeObj && activeObj.isEditing && o.target === activeObj) {
+                    return;
+                }
+
+                // Snapshot sticky/anchor data here, before the image has moved at all — see
+                // computeStickyData()'s comment for why this can't wait for the first drag tick.
+                if (o.target && o.target.type === 'image') {
+                    computeStickyData(o.target);
+                }
+
+                const pointer = canvas.getPointer(o.e);
+
+                // A click landing on any CompareSlider's divider handle — selected or not —
+                // drags the divider instead of moving/selecting the widget. Checked against
+                // every compareSlider on the canvas (not just o.target) since the handle can
+                // extend slightly beyond the object's own bounding box at the drag hit-test
+                // margin. Fabric already committed its own default transform for this mousedown
+                // by the time this fires (see hitTestCompareHandle's comment) — null it out so
+                // the object doesn't also start sliding/moving underneath our own drag.
+                if (currentMode === 'select') {
+                    const compareTarget = canvas.getObjects().find(o2 => hitTestCompareHandle(o2, pointer));
+                    if (compareTarget) {
+                        isDraggingCompareHandle = true;
+                        compareDragTarget = compareTarget;
+                        canvas._currentTransform = null;
+                        canvas.selection = false;
+                        canvas.requestRenderAll();
+                        return;
+                    }
+                }
+
+                // Grabbing a callout's leader line moves the WHOLE callout (box, frame, leader,
+                // arrowhead) rigidly together — and a plain click (no drag) leaves the box
+                // selected, so Delete removes everything. Grabbing the arrowhead instead repositions
+                // just the tip, leaving the box in place. Both are hand-rolled drags (not fabric's
+                // own object transform) since these parts are deliberately non-selectable.
+                if (currentMode === 'select' && o.target) {
+                    if (o.target.calloutRole === 'leg1' || o.target.calloutRole === 'leg2') {
+                        const entry = calloutRegistry[o.target.calloutId];
+                        if (entry) {
+                            isDraggingCalloutRigid = true;
+                            rigidDragEntry = entry;
+                            rigidDragStart = { x: pointer.x, y: pointer.y };
+                            rigidDragOriginal = {
+                                tipX: entry.leg1.tipX, tipY: entry.leg1.tipY,
+                                leg1X2: entry.leg1.x2, leg1Y2: entry.leg1.y2,
+                                leg2X1: entry.leg2.x1, leg2Y1: entry.leg2.y1,
+                                leg2X2: entry.leg2.x2, leg2Y2: entry.leg2.y2,
+                                headX: entry.head.left, headY: entry.head.top,
+                                frameX: entry.frame.left, frameY: entry.frame.top,
+                                boxX: entry.box.left, boxY: entry.box.top
+                            };
+                            canvas.discardActiveObject();
+                            canvas.selection = false;
+                            canvas.requestRenderAll();
+                            return;
+                        }
+                    } else if (o.target.calloutRole === 'head') {
+                        const entry = calloutRegistry[o.target.calloutId];
+                        if (entry) {
+                            isDraggingCalloutTip = true;
+                            tipDragEntry = entry;
+                            canvas.discardActiveObject();
+                            canvas.selection = false;
+                            canvas.requestRenderAll();
+                            return;
+                        }
+                    } else if (o.target.calloutRole === 'frame') {
+                        const entry = calloutRegistry[o.target.calloutId];
+                        if (entry) {
+                            isDraggingCalloutFrame = true;
+                            frameDragEntry = entry;
+                            frameDragStart = { x: pointer.x, y: pointer.y };
+                            frameDragOriginalBox = { x: entry.box.left, y: entry.box.top };
+                            canvas.discardActiveObject();
+                            canvas.selection = false;
+                            canvas.requestRenderAll();
+                            return;
+                        }
+                    }
+                }
+
+                if (currentMode === 'rect') {
+                    isDrawingShape = true;
+                    shapeStart = { x: pointer.x, y: pointer.y };
+                    activeShape = new fabric.Rect({
+                        left: pointer.x, top: pointer.y, originX: 'left', originY: 'top',
+                        width: 0, height: 0, fill: 'transparent',
+                        stroke: currentColor, strokeWidth: currentWidth,
+                        // Keeps the stroke's on-screen thickness constant regardless of the
+                        // shape's own scaleX/scaleY — without this, resizing via a corner handle
+                        // (which changes scale, not width/height) visually thins/thickens the
+                        // border, so the same "weight" value looks different across objects that
+                        // happen to have been resized by different amounts.
+                        strokeUniform: true,
+                        cornerColor: '#3b82f6', borderColor: '#3b82f6', transparentCorners: false
+                    });
+                    canvas.add(activeShape);
+                } else if (currentMode === 'circle') {
+                    isDrawingShape = true;
+                    shapeStart = { x: pointer.x, y: pointer.y };
+                    activeShape = new fabric.Circle({
+                        left: pointer.x, top: pointer.y, originX: 'left', originY: 'top',
+                        radius: 0, fill: 'transparent',
+                        stroke: currentColor, strokeWidth: currentWidth,
+                        strokeUniform: true, // see Rect above — keeps stroke weight scale-independent
+                        cornerColor: '#3b82f6', borderColor: '#3b82f6', transparentCorners: false
+                    });
+                    canvas.add(activeShape);
+                } else if (currentMode === 'text') {
+                    // Textbox (not IText) so the side handles can drag the wrap width, same as callouts
+                    const text = new fabric.Textbox('Type here...', {
+                        left: pointer.x, top: pointer.y, originX: 'center', originY: 'center',
+                        width: 200, fontFamily: currentFont, fill: currentColor, fontSize: currentFontSize,
+                        cornerColor: '#3b82f6', borderColor: '#3b82f6', transparentCorners: false
+                    });
+                    canvas.add(text);
+                    canvas.setActiveObject(text);
+                    text.enterEditing();
+                    text.selectAll();
+                    saveHistory();
+                    setMode('select', 'btn-select');
+                } else if (currentMode === 'callout') {
+                    // Click-drag-release: mouse down plants the fixed tip, drag previews the
+                    // arrow, release drops the note box wherever the mouse is.
+                    // Callouts default to white (independent of the shared color picker) since
+                    // they're meant to read as a clean note against any photo — pick the callout
+                    // back up and use the color picker to customize it like any other object.
+                    isDrawingCallout = true;
+                    calloutLine = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], {
+                        strokeWidth: currentWidth, fill: CALLOUT_DEFAULT_COLOR, stroke: CALLOUT_DEFAULT_COLOR,
+                        originX: 'center', originY: 'center', selectable: false, evented: false,
+                        tipX: pointer.x, tipY: pointer.y // fixed anchor, read via tipX/tipY (see calloutRegistry note)
+                    });
+                    calloutHead = new fabric.Triangle({
+                        width: arrowHeadSize(currentWidth), height: arrowHeadSize(currentWidth), fill: CALLOUT_DEFAULT_COLOR,
+                        left: pointer.x, top: pointer.y, originX: 'center', originY: 'center',
+                        selectable: false, evented: false, angle: 90
+                    });
+                    canvas.add(calloutLine, calloutHead);
+                } else if (currentMode === 'arrow') {
+                    isDrawingArrow = true;
+                    arrowLine = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], {
+                        strokeWidth: currentWidth, fill: currentColor, stroke: currentColor,
+                        strokeUniform: true, // see Rect above — keeps stroke weight scale-independent
+                        originX: 'center', originY: 'center', selectable: false, evented: false
+                    });
+                    arrowHead = new fabric.Triangle({
+                        width: arrowHeadSize(currentWidth), height: arrowHeadSize(currentWidth), fill: currentColor,
+                        left: pointer.x, top: pointer.y, originX: 'center', originY: 'center',
+                        selectable: false, evented: false, angle: 90
+                    });
+                    canvas.add(arrowLine, arrowHead);
+                } else if (currentMode === 'polygon') {
+                    // Check if we are clicking near the first point to auto-close
+                    if (polyPoints.length > 2) {
+                        const first = polyPoints[0];
+                        const dist = Math.sqrt(Math.pow(pointer.x - first.x, 2) + Math.pow(pointer.y - first.y, 2));
+                        if (dist < 20) {
+                            finishPolygon();
+                            return;
+                        }
+                    }
+
+                    polyPoints.push({ x: pointer.x, y: pointer.y });
+                    
+                    if (polyPoints.length > 1) {
+                        const prev = polyPoints[polyPoints.length - 2];
+                        const line = new fabric.Line([prev.x, prev.y, pointer.x, pointer.y], {
+                            strokeWidth: currentWidth, fill: currentColor, stroke: currentColor,
+                            originX: 'center', originY: 'center', selectable: false, evented: false,
+                            strokeLineCap: 'round', strokeLineJoin: 'round'
+                        });
+                        polyLines.push(line);
+                        canvas.add(line);
+                    }
+                    
+                    if (activePolyLine) canvas.remove(activePolyLine);
+                    activePolyLine = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], {
+                        strokeWidth: currentWidth, fill: currentColor, stroke: currentColor,
+                        originX: 'center', originY: 'center', selectable: false, evented: false,
+                        strokeLineCap: 'round', strokeLineJoin: 'round'
+                    });
+                    canvas.add(activePolyLine);
+                }
+            });
+
+            canvas.on('mouse:move', function(o) {
+                if (isPanning) {
+                    const e = o.e;
+                    const vpt = canvas.viewportTransform;
+                    vpt[4] += e.clientX - lastPosX;
+                    vpt[5] += e.clientY - lastPosY;
+                    canvas.requestRenderAll();
+                    updateMultiSelectToolbar(); // Keep toolbar pinned to moving DOM
+                    updateImageNameLabel();
+                    lastPosX = e.clientX;
+                    lastPosY = e.clientY;
+                    return;
+                }
+
+                const pointer = canvas.getPointer(o.e);
+
+                if (isDraggingCompareHandle && compareDragTarget) {
+                    // toLocalPoint rotates+translates into the object's local axes but does NOT
+                    // divide out scale, so it ranges over ±(width*scaleX)/2 — same convention
+                    // the object's own dividerHandle actionHandler uses (see that comment).
+                    const target = compareDragTarget;
+                    const localPoint = target.toLocalPoint(new fabric.Point(pointer.x, pointer.y), 'center', 'center');
+                    const scaledWidth = target.width * (target.scaleX || 1);
+                    let frac = scaledWidth ? (localPoint.x / scaledWidth + 0.5) : 0.5;
+                    frac = Math.max(0.015, Math.min(0.985, frac));
+                    if (target.divider !== frac) {
+                        target.set('divider', frac);
+                        canvas.requestRenderAll();
+                    }
+                    return;
+                }
+
+                if (isDraggingCalloutRigid && rigidDragEntry) {
+                    const dx = pointer.x - rigidDragStart.x;
+                    const dy = pointer.y - rigidDragStart.y;
+                    const e = rigidDragEntry, orig = rigidDragOriginal;
+                    e.leg1.set({
+                        x1: orig.tipX + dx, y1: orig.tipY + dy,
+                        x2: orig.leg1X2 + dx, y2: orig.leg1Y2 + dy,
+                        tipX: orig.tipX + dx, tipY: orig.tipY + dy
+                    });
+                    e.leg1.setCoords();
+                    e.leg2.set({
+                        x1: orig.leg2X1 + dx, y1: orig.leg2Y1 + dy,
+                        x2: orig.leg2X2 + dx, y2: orig.leg2Y2 + dy
+                    });
+                    e.leg2.setCoords();
+                    e.head.set({ left: orig.headX + dx, top: orig.headY + dy });
+                    e.head.setCoords();
+                    e.frame.set({ left: orig.frameX + dx, top: orig.frameY + dy });
+                    e.frame.setCoords();
+                    e.box.set({ left: orig.boxX + dx, top: orig.boxY + dy });
+                    e.box.setCoords();
+                    canvas.requestRenderAll();
+                    return;
+                }
+
+                if (isDraggingCalloutTip && tipDragEntry) {
+                    tipDragEntry.leg1.tipX = pointer.x;
+                    tipDragEntry.leg1.tipY = pointer.y;
+                    updateCalloutGeometry(tipDragEntry);
+                    canvas.requestRenderAll();
+                    return;
+                }
+
+                if (isDraggingCalloutFrame && frameDragEntry) {
+                    const dx = pointer.x - frameDragStart.x;
+                    const dy = pointer.y - frameDragStart.y;
+                    frameDragEntry.box.set({
+                        left: frameDragOriginalBox.x + dx,
+                        top: frameDragOriginalBox.y + dy
+                    });
+                    frameDragEntry.box.setCoords();
+                    updateCalloutGeometry(frameDragEntry);
+                    canvas.requestRenderAll();
+                    return;
+                }
+
+                if (isDrawingShape && activeShape) {
+                    if (currentMode === 'rect') {
+                        activeShape.set({
+                            width: Math.abs(pointer.x - shapeStart.x),
+                            height: Math.abs(pointer.y - shapeStart.y),
+                            left: Math.min(pointer.x, shapeStart.x),
+                            top: Math.min(pointer.y, shapeStart.y)
+                        });
+                    } else if (currentMode === 'circle') {
+                        const radius = Math.max(Math.abs(pointer.x - shapeStart.x), Math.abs(pointer.y - shapeStart.y)) / 2;
+                        activeShape.set({
+                            radius: radius,
+                            left: Math.min(pointer.x, shapeStart.x),
+                            top: Math.min(pointer.y, shapeStart.y)
+                        });
+                    }
+                    canvas.renderAll();
+                } else if (currentMode === 'arrow' && isDrawingArrow && arrowLine && arrowHead) {
+                    // Update line end
+                    arrowLine.set({ x2: pointer.x, y2: pointer.y });
+                    
+                    // Update arrowhead position
+                    arrowHead.set({ left: pointer.x, top: pointer.y });
+                    
+                    // Calculate rotation angle for arrowhead
+                    const dx = pointer.x - arrowLine.x1;
+                    const dy = pointer.y - arrowLine.y1;
+                    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                    arrowHead.set({ angle: angle + 90 });
+                    
+                    canvas.renderAll();
+                } else if (currentMode === 'callout' && isDrawingCallout && calloutLine && calloutHead) {
+                    // Keep arrow tip (x1, y1) anchored. Draw line TO pointer (x2, y2)
+                    calloutLine.set({ x2: pointer.x, y2: pointer.y });
+
+                    // Rotate arrowhead at the tip to face AWAY from pointer towards tip
+                    const dx = calloutLine.tipX - pointer.x;
+                    const dy = calloutLine.tipY - pointer.y;
+                    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                    calloutHead.set({ angle: angle + 90 });
+
+                    canvas.renderAll();
+                } else if (currentMode === 'polygon' && activePolyLine) {
+                    // Update end point of the active polygon line to follow cursor
+                    activePolyLine.set({ x2: pointer.x, y2: pointer.y });
+                    canvas.renderAll();
+                }
+            });
+
+            canvas.on('mouse:up', function(o) {
+                clearGuidelines();
+                isDraggingSticky = false;
+                
+                if (isPanning) {
+                    canvas.setViewportTransform(canvas.viewportTransform);
+                    isPanning = false;
+                    if (currentMode === 'select') canvas.selection = true;
+                    return;
+                }
+
+                if (isDraggingCompareHandle) {
+                    isDraggingCompareHandle = false;
+                    canvas.selection = true;
+                    compareDragTarget = null;
+                    saveHistory();
+                    return;
+                }
+
+                if (isDraggingCalloutRigid) {
+                    isDraggingCalloutRigid = false;
+                    canvas.selection = true;
+                    if (rigidDragEntry) canvas.setActiveObject(rigidDragEntry.box);
+                    rigidDragEntry = null; rigidDragStart = null; rigidDragOriginal = null;
+                    saveHistory();
+                    return;
+                }
+
+                if (isDraggingCalloutTip) {
+                    isDraggingCalloutTip = false;
+                    canvas.selection = true;
+                    tipDragEntry = null;
+                    saveHistory();
+                    return;
+                }
+
+                if (isDraggingCalloutFrame) {
+                    isDraggingCalloutFrame = false;
+                    canvas.selection = true;
+                    if (frameDragEntry) canvas.setActiveObject(frameDragEntry.box);
+                    frameDragEntry = null; frameDragStart = null; frameDragOriginalBox = null;
+                    saveHistory();
+                    return;
+                }
+
+                if (isDrawingShape) {
+                    isDrawingShape = false;
+                    if (activeShape) {
+                        activeShape.setCoords();
+                        // If it's too small (accidental click), remove it
+                        if ((currentMode === 'rect' && activeShape.width < 5) || 
+                            (currentMode === 'circle' && activeShape.radius < 5)) {
+                            canvas.remove(activeShape);
+                        } else {
+                            canvas.setActiveObject(activeShape);
+                            saveHistory();
+                        }
+                    }
+                    activeShape = null;
+                    setMode('select', 'btn-select');
+                }
+
+                if (currentMode === 'callout' && isDrawingCallout) {
+                    isDrawingCallout = false;
+
+                    if (calloutLine) {
+                        let dropX = calloutLine.x2;
+                        let dropY = calloutLine.y2;
+                        const tipX = calloutLine.tipX, tipY = calloutLine.tipY;
+
+                        // A real click-drag always drops the box exactly where you dragged it —
+                        // no override. Only a plain click (no real drag) gets the "smart"
+                        // placement below, since otherwise there'd be nothing for the user to
+                        // drag the box away from in the first place.
+                        let clickedImage = null;
+                        let creationSide = null;
+                        const dist = Math.hypot(dropX - tipX, dropY - tipY);
+                        if (dist < 10) {
+                            // Plain axis-aligned bounds check (not containsPoint) — matches how
+                            // computeOffImagePosition and the sticky-drag anchor logic already
+                            // treat images elsewhere, so a click can't be judged "on the image"
+                            // by one rule and "off the image" by another.
+                            clickedImage = canvas.getObjects().slice().reverse()
+                                .find(o => o.type === 'image' && pointInRect(tipX, tipY, o.getBoundingRect(true)));
+                            if (clickedImage) {
+                                const placed = computeOffImagePosition(clickedImage.getBoundingRect(true), tipX, tipY);
+                                dropX = placed.dropX;
+                                dropY = placed.dropY;
+                                creationSide = placed.side;
+                            } else {
+                                // No image under the tip — nudge aside so a plain click doesn't
+                                // drop the note directly on top of the tip.
+                                dropX = tipX + 70;
+                                dropY = tipY;
+                            }
+                        }
+
+                        // The straight preview line was only for feedback while dragging — the
+                        // real connector is a kinked (Acrobat-style) two-segment leader, built
+                        // below by updateCalloutGeometry once the box exists.
+                        canvas.remove(calloutLine);
+
+                        const id = 'callout_' + (calloutCounter++);
+                        const tip = { x: calloutLine.tipX, y: calloutLine.tipY };
+
+                        // perPixelTargetFind so a click has to actually land on the thin leader
+                        // line itself — otherwise its diagonal bounding box (much bigger than the
+                        // visible stroke) swallows clicks meant for the arrowhead at the tip.
+                        const leg1 = new fabric.Line([tip.x, tip.y, tip.x, tip.y], {
+                            stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth, fill: CALLOUT_DEFAULT_COLOR,
+                            strokeUniform: true, // see Rect above — keeps stroke weight scale-independent
+                            selectable: false, evented: false, strokeLineCap: 'round',
+                            perPixelTargetFind: true,
+                            calloutId: id, calloutRole: 'leg1', tipX: tip.x, tipY: tip.y
+                        });
+                        const leg2 = new fabric.Line([tip.x, tip.y, tip.x, tip.y], {
+                            stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth, fill: CALLOUT_DEFAULT_COLOR,
+                            strokeUniform: true,
+                            selectable: false, evented: false, strokeLineCap: 'round',
+                            perPixelTargetFind: true,
+                            calloutId: id, calloutRole: 'leg2'
+                        });
+                        calloutHead.set({ calloutId: id, calloutRole: 'head' });
+
+                        // The visible note "card" — background + border live here, never on the
+                        // text itself, so the border reads as a clean box outline, not a text stroke.
+                        const frame = new fabric.Rect({
+                            left: dropX, top: dropY, width: 10, height: 10,
+                            fill: `rgba(255, 255, 255, ${currentOpacity})`,
+                            stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth,
+                            strokeUniform: true, // see Rect (shape tool) above
+                            rx: 8, ry: 8, selectable: false, evented: false,
+                            calloutId: id, calloutRole: 'frame'
+                        });
+
+                        calloutBox = new fabric.Textbox('Callout Note', {
+                            left: dropX, top: dropY, originX: 'center', originY: 'center',
+                            // Text always matches the stroke/leader/arrowhead color (see
+                            // syncCalloutColor) — both start at CALLOUT_DEFAULT_COLOR here.
+                            width: 190, fontFamily: currentFont, fill: CALLOUT_DEFAULT_COLOR, fontWeight: '600',
+                            fontSize: currentFontSize,
+                            calloutId: id, calloutRole: 'box',
+                            // Selection border/corners draw padded out to CALLOUT_PADDING so they
+                            // hug the visible card, not just the tight text — purely cosmetic,
+                            // doesn't affect the text layout or the tight click/hit area.
+                            padding: CALLOUT_PADDING,
+                            // No rotate handle, no vertical stretch — corner handles stay
+                            // proportional-only, but the side handles are left on so the box's
+                            // wrap width can still be dragged wider/narrower.
+                            lockRotation: true,
+                            lockUniScaling: true
+                        });
+                        calloutBox.setControlsVisibility({
+                            mtr: false, mt: false, mb: false
+                        });
+
+                        canvas.add(leg1, leg2, frame, calloutBox);
+                        // Keep the arrowhead on top of the leader lines so a click at the tip
+                        // hits the (bigger, easier-to-grab) head first, not the leader.
+                        canvas.bringToFront(calloutHead);
+                        calloutRegistry[id] = { leg1, leg2, head: calloutHead, frame, box: calloutBox };
+                        updateCalloutGeometry(calloutRegistry[id]);
+                        if (clickedImage) {
+                            // Auto-parked against an edge of an image — re-stack every callout on
+                            // this same edge in tip order so leader lines fan out without
+                            // crossing, rather than just nudging this one clear of whatever it
+                            // happens to overlap.
+                            relayoutCalloutsForImageEdge(clickedImage, creationSide);
+                        } else {
+                            resolveCalloutOverlap(calloutRegistry[id]);
+                        }
+                        // Keep the frame glued to the box's full padded area even while typing
+                        // reflows/resizes it (Textbox's own backgroundColor only hugs the text
+                        // lines, not the padding — that mismatch is why the old box never looked
+                        // "bled" into its background).
+                        calloutBox.on('changed', () => updateCalloutGeometry(calloutRegistry[id]));
+                        calloutBox.on('editing:exited', () => updateCalloutGeometry(calloutRegistry[id]));
+
+                        canvas.setActiveObject(calloutBox);
+                        // Capture locally — the shared calloutBox variable gets nulled out
+                        // below before this timeout fires
+                        const newBox = calloutBox;
+                        setTimeout(() => {
+                            newBox.enterEditing();
+                            newBox.selectAll();
+                        }, 50);
+
+                        saveHistory();
+                    }
+
+                    calloutLine = null; calloutHead = null; calloutBox = null;
+                    setMode('select', 'btn-select');
+                }
+
+                if (currentMode === 'arrow' && isDrawingArrow) {
+                    isDrawingArrow = false;
+
+                    // Only create group if a line was actually drawn (prevents tiny dots on accidental click)
+                    if (arrowLine && (arrowLine.x1 !== arrowLine.x2 || arrowLine.y1 !== arrowLine.y2)) {
+                        arrowLine.set({ selectable: true, evented: true });
+                        arrowHead.set({ selectable: true, evented: true });
+                        
+                        // Group line and head together
+                        const arrowGroup = new fabric.Group([arrowLine, arrowHead], {
+                            selectable: true,
+                            cornerColor: '#3b82f6', 
+                            borderColor: '#3b82f6', 
+                            transparentCorners: false
+                        });
+                        
+                        canvas.remove(arrowLine, arrowHead);
+                        canvas.add(arrowGroup);
+                        canvas.setActiveObject(arrowGroup);
+                        saveHistory();
+                    } else if (arrowLine) {
+                        canvas.remove(arrowLine, arrowHead); // Remove accidental clicks
+                    }
+                    
+                    // Switch back to select mode automatically after drawing an arrow
+                    setMode('select', 'btn-select');
+                }
+            });
+
+            canvas.on('mouse:dblclick', function(o) {
+                if (currentMode === 'polygon') {
+                    finishPolygon();
+                    return;
+                }
+                // Double-clicking anywhere on the visible card (not just the tight text) should
+                // drop straight into editing, same as double-clicking the text itself.
+                if (currentMode === 'select' && o.target && o.target.calloutRole === 'frame') {
+                    const entry = calloutRegistry[o.target.calloutId];
+                    if (entry && entry.box) {
+                        canvas.setActiveObject(entry.box);
+                        entry.box.enterEditing();
+                        entry.box.selectAll();
+                        canvas.requestRenderAll();
+                    }
+                }
+            });
+
+            // Undo Function
+            function undo() {
+                if (history.length > 0) {
+                    isUndoing = true;
+                    const state = history.pop();
+                    canvas.loadFromJSON(state, function() {
+                        canvas.renderAll();
+                        isUndoing = false;
+                        currentState = state; // Keep track of the newly loaded state
+                        rebuildCalloutRegistry(); // loadFromJSON creates fresh objects, relink them
+                        updateActionButtons();
+                    });
+                }
+            }
+
+            document.getElementById('btn-undo').addEventListener('click', undo);
+
+            document.getElementById('imageUpload').addEventListener('change', function(e) {
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+
+                processFiles(files);
+
+                // Reset input so same files can be selected again if needed
+                e.target.value = '';
+            });
+
+            // Paste images straight from the clipboard (Ctrl/Cmd+V) onto the canvas
+            document.addEventListener('paste', (e) => {
+                // Don't steal a paste meant for an in-progress text edit (callout/text box)
+                const active = canvas.getActiveObject();
+                if (active && active.isEditing) return;
+
+                const items = (e.clipboardData || window.clipboardData || {}).items;
+                if (!items) return;
+
+                const files = [];
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].type && items[i].type.indexOf('image') !== -1) {
+                        const file = items[i].getAsFile();
+                        if (file) files.push(file);
+                    }
+                }
+
+                if (files.length > 0) {
+                    e.preventDefault();
+
+                    // Paste under the mouse's last known position (same conversion the drop
+                    // handler uses), falling back to canvas center if it's off-canvas or the
+                    // cursor position was never tracked (e.g. paste via a menu action).
+                    let pastePoint = null;
+                    if (lastMouseClientX !== null) {
+                        const rect = document.getElementById('canvas-container').getBoundingClientRect();
+                        const vpt = canvas.viewportTransform;
+                        if (lastMouseClientX >= rect.left && lastMouseClientX <= rect.right &&
+                            lastMouseClientY >= rect.top && lastMouseClientY <= rect.bottom) {
+                            pastePoint = {
+                                x: (lastMouseClientX - rect.left - vpt[4]) / vpt[0],
+                                y: (lastMouseClientY - rect.top - vpt[5]) / vpt[3]
+                            };
+                        }
+                    }
+                    processFiles(files, pastePoint);
+                }
+            });
+
+            function deleteSelected() {
+                const activeObjects = canvas.getActiveObjects();
+                if (activeObjects.length) {
+                    // Deselect before removing to prevent errors
+                    canvas.discardActiveObject();
+                    activeObjects.forEach(function(object) {
+                        // Deleting a callout's box also removes its (non-selectable) leader/frame parts
+                        if (object.calloutId) {
+                            const entry = calloutRegistry[object.calloutId];
+                            if (entry) {
+                                if (entry.leg1) canvas.remove(entry.leg1);
+                                if (entry.leg2) canvas.remove(entry.leg2);
+                                if (entry.head) canvas.remove(entry.head);
+                                if (entry.frame) canvas.remove(entry.frame);
+                                delete calloutRegistry[object.calloutId];
+                            }
+                        }
+                        canvas.remove(object);
+                    });
+                    saveHistory();
+                }
+            }
+
+            document.getElementById('btn-delete').addEventListener('click', deleteSelected);
+
+            // Bind Delete/Backspace, Escape and Undo (Ctrl+Z) keys
+            window.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+                    e.preventDefault();
+                    undo();
+                    return;
+                }
+
+                if (e.key === 'Escape') {
+                    if (!reorderPopup.classList.contains('hidden')) {
+                        closeReorderPopup();
+                    } else if (isPickingCompareTarget) {
+                        cancelComparePicking();
+                    } else if (currentMode === 'polygon') {
+                        finishPolygonOpen();
+                    } else if (currentMode !== 'select') {
+                        setMode('select', 'btn-select');
+                    }
+                }
+
+                // Ensure we aren't typing inside a text box
+                if (e.key === 'Delete' || e.key === 'Backspace') {
+                    if (canvas.getActiveObject() && !canvas.getActiveObject().isEditing) {
+                        e.preventDefault();
+                        deleteSelected();
+                    }
+                }
+            });
+
+            const multiSelectToolbar = document.getElementById('multi-select-toolbar');
+            
+            function updateMultiSelectToolbar() {
+                const activeObj = canvas.getActiveObject();
+                const isMultiSelect = !!activeObj && activeObj.type === 'activeSelection';
+                // Any single selected object also gets this floating toolbar — for Reorder
+                // (and, for images specifically, Compare). The align/layout/scale buttons stay
+                // hidden since they need 2+ objects.
+                const isSingleObject = !!activeObj && activeObj.type !== 'activeSelection';
+                const isSingleImage = !!activeObj && activeObj.type === 'image';
+
+                if (isMultiSelect || isSingleObject) {
+                    const boundingRect = activeObj.getBoundingRect(true);
+
+                    // Convert internal canvas coordinates to DOM coordinates considering zoom and pan
+                    const zoom = canvas.getZoom();
+                    const vpt = canvas.viewportTransform;
+
+                    // Always locked to the top of the combined selection bounding box
+                    const domLeft = (boundingRect.left * zoom) + vpt[4] + ((boundingRect.width * zoom) / 2);
+                    const domTop = (boundingRect.top * zoom) + vpt[5] - 50;
+
+                    multiSelectToolbar.style.top = `${domTop}px`;
+                    multiSelectToolbar.style.left = `${domLeft}px`;
+                    multiSelectToolbar.classList.add('toolbar-visible');
+
+                    document.getElementById('multi-only-controls').classList.toggle('hidden', !isMultiSelect);
+
+                    // Compare shows for exactly two images selected together, OR a single
+                    // selected image (clicking it then starts the "pick a partner" flow).
+                    let showCompare = false;
+                    if (isMultiSelect) {
+                        const members = activeObj.getObjects();
+                        showCompare = members.length === 2 && members.every(o => o.type === 'image');
+                    } else if (isSingleImage) {
+                        showCompare = true;
+                    }
+                    document.getElementById('btn-compare').classList.toggle('hidden', !showCompare);
+                } else {
+                    multiSelectToolbar.classList.remove('toolbar-visible');
+                    closeReorderPopup();
+                }
+                updateActionButtons();
+            }
+
+            canvas.on('selection:created', updateMultiSelectToolbar);
+            canvas.on('selection:updated', updateMultiSelectToolbar);
+            canvas.on('selection:cleared', updateMultiSelectToolbar);
+
+            // Reorder popup: bring-to-front / forward / backward / send-to-back for whatever
+            // is currently selected (a single object, or every object in a multi-selection).
+            const reorderPopup = document.getElementById('reorder-popup');
+
+            function closeReorderPopup() {
+                reorderPopup.classList.add('hidden');
+            }
+
+            document.getElementById('btn-reorder').addEventListener('click', (e) => {
+                e.stopPropagation();
+                reorderPopup.classList.toggle('hidden');
+            });
+
+            document.addEventListener('mousedown', (e) => {
+                if (!reorderPopup.classList.contains('hidden') && !reorderPopup.contains(e.target) && e.target.id !== 'btn-reorder' && !document.getElementById('btn-reorder').contains(e.target)) {
+                    closeReorderPopup();
+                }
+            });
+
+            function reorderSelection(action) {
+                const objects = canvas.getActiveObjects();
+                if (!objects.length) return;
+                const byIndex = (o) => canvas._objects.indexOf(o);
+                if (action === 'front') {
+                    [...objects].sort((a, b) => byIndex(a) - byIndex(b)).forEach(o => canvas.bringToFront(o));
+                } else if (action === 'back') {
+                    [...objects].sort((a, b) => byIndex(b) - byIndex(a)).forEach(o => canvas.sendToBack(o));
+                } else if (action === 'forward') {
+                    [...objects].sort((a, b) => byIndex(b) - byIndex(a)).forEach(o => canvas.bringForward(o));
+                } else if (action === 'backward') {
+                    [...objects].sort((a, b) => byIndex(a) - byIndex(b)).forEach(o => canvas.sendBackwards(o));
+                }
+                canvas.requestRenderAll();
+                saveHistory();
+            }
+
+            document.getElementById('btn-reorder-front').addEventListener('click', () => reorderSelection('front'));
+            document.getElementById('btn-reorder-forward').addEventListener('click', () => reorderSelection('forward'));
+            document.getElementById('btn-reorder-backward').addEventListener('click', () => reorderSelection('backward'));
+            document.getElementById('btn-reorder-back').addEventListener('click', () => reorderSelection('back'));
+
+            // A single fixed label element handles the common single-image-selection case; a
+            // multi-selection needs one label per selected image, so extra labels are cloned
+            // from it on demand into this pool instead of hardcoding a fixed number up front.
+            const imageNameLabelPool = [document.getElementById('image-name-label')];
+
+            function getPooledImageLabel(i) {
+                if (!imageNameLabelPool[i]) {
+                    const el = imageNameLabelPool[0].cloneNode(false);
+                    el.removeAttribute('id');
+                    imageNameLabelPool[0].parentNode.appendChild(el);
+                    imageNameLabelPool[i] = el;
+                }
+                return imageNameLabelPool[i];
+            }
+
+            // A label shows the filename, then its pixel resolution underneath in smaller
+            // text — built once per pooled element (as two child divs) and reused/updated in
+            // place on every call instead of rebuilding the DOM on each selection/drag tick.
+            function setImageLabelContent(el, name, width, height) {
+                if (!el._nameEl) {
+                    el.textContent = '';
+                    el._nameEl = document.createElement('div');
+                    el._resEl = document.createElement('div');
+                    el._resEl.style.cssText = 'font-size:0.78em;opacity:0.7;margin-top:2px;font-weight:400;';
+                    el.appendChild(el._nameEl);
+                    el.appendChild(el._resEl);
+                }
+                el._nameEl.textContent = name;
+                const aspect = height ? (width / height).toFixed(2) : '?';
+                el._resEl.textContent = `${width} × ${height} · ${aspect}`;
+            }
+
+            function updateImageNameLabel() {
+                const activeObj = canvas.getActiveObject();
+
+                // Every currently selected image that came from a real upload (has a recorded
+                // source filename) — either the one selected image, or every image swept into
+                // a multi-selection.
+                let images = [];
+                if (activeObj && activeObj.type === 'image' && activeObj.sourceFileName) {
+                    images = [activeObj];
+                } else if (activeObj && activeObj.type === 'activeSelection') {
+                    images = activeObj.getObjects().filter(o => o.type === 'image' && o.sourceFileName);
+                }
+
+                const zoom = canvas.getZoom();
+                const vpt = canvas.viewportTransform;
+                // Scale the label itself with canvas zoom so it stays proportional to the
+                // image's own on-screen size instead of a fixed DOM font-size — at low zoom a
+                // constant-size label reads huge next to a shrunk image and multiple labels
+                // overlap; clamped so it never becomes illegible (too small) or oversized.
+                const labelScale = Math.max(0.35, Math.min(zoom, 1.75));
+                const inset = 8 * labelScale;
+
+                images.forEach((img, i) => {
+                    // getBoundingRect() is group-relative while part of an activeSelection —
+                    // getAbsoluteBoundingRect() resolves it back to true canvas coordinates.
+                    const boundingRect = getAbsoluteBoundingRect(img);
+                    const domLeft = (boundingRect.left * zoom) + vpt[4] + (boundingRect.width * zoom) - inset;
+                    const domTop = (boundingRect.top * zoom) + vpt[5] + (boundingRect.height * zoom) - inset;
+
+                    const label = getPooledImageLabel(i);
+                    setImageLabelContent(label, img.sourceFileName, Math.round(img.width), Math.round(img.height));
+                    label.style.top = `${domTop}px`;
+                    label.style.left = `${domLeft}px`;
+                    label.style.transformOrigin = 'bottom right';
+                    label.style.transform = `translate(-100%, -100%) scale(${labelScale})`;
+                    label.classList.add('label-visible');
+                });
+
+                // Park any pooled labels not needed this time (e.g. selection shrank from 3
+                // images to 1) so they don't linger showing stale names/positions.
+                for (let i = images.length; i < imageNameLabelPool.length; i++) {
+                    imageNameLabelPool[i].classList.remove('label-visible');
+                }
+            }
+
+            canvas.on('selection:created', updateImageNameLabel);
+            canvas.on('selection:updated', updateImageNameLabel);
+            canvas.on('selection:cleared', updateImageNameLabel);
+            
+            // Snapshot which shapes/callouts should ride along with an image BEFORE it starts
+            // moving. Doing this lazily on the first 'object:moving' tick instead would read the
+            // image's bounds AFTER Fabric already nudged it for that frame, which is close enough
+            // for area-overlap checks but not for the tip's exact point-in-image test below — a
+            // tip sitting right at the image's edge could fall outside on that very first tick.
+            function computeStickyData(obj) {
+                isDraggingSticky = true;
+                stickyOffsets = [];
+                calloutStickies = [];
+
+                const allObjects = canvas.getObjects();
+                const objBounds = obj.getBoundingRect(true);
+
+                allObjects.forEach(otherObj => {
+                    // Callouts are handled separately below, keyed off their combined bounds
+                    if (otherObj !== obj && otherObj.type !== 'image' && !guideLines.includes(otherObj) && !otherObj.calloutId) {
+                        const otherBounds = otherObj.getBoundingRect(true);
+                        // Any overlap at all with the image counts — not just full containment
+                        if (rectsOverlap(objBounds, otherBounds)) {
+                            stickyOffsets.push({
+                                obj: otherObj,
+                                offsetX: otherObj.left - obj.left,
+                                offsetY: otherObj.top - obj.top
+                            });
+                        }
+                    }
+                });
+
+                // A callout can visually overlap more than one image at once (its card
+                // parked beside a second photo, say) — anchor it to whichever image the
+                // arrow actually POINTS TO first; only fall back to "just overlapping"
+                // when the tip isn't sitting over any image at all. That way dragging a
+                // photo the callout merely overlaps, but isn't pointing at, leaves it put.
+                const allImages = allObjects.filter(o => o.type === 'image');
+                Object.values(calloutRegistry).forEach(entry => {
+                    if (!entry.leg1 || !entry.leg2 || !entry.head || !entry.box || !entry.frame) return;
+                    const tipX = entry.leg1.tipX, tipY = entry.leg1.tipY;
+                    const frameRect = getCalloutFrameRect(entry.box);
+                    const calloutBounds = {
+                        left: Math.min(tipX, frameRect.left),
+                        top: Math.min(tipY, frameRect.top),
+                        width: Math.max(tipX, frameRect.left + frameRect.width) - Math.min(tipX, frameRect.left),
+                        height: Math.max(tipY, frameRect.top + frameRect.height) - Math.min(tipY, frameRect.top)
+                    };
+                    let anchorImage = allImages.find(img => pointInRect(tipX, tipY, img.getBoundingRect(true)));
+                    if (!anchorImage) {
+                        anchorImage = allImages.find(img => rectsOverlap(img.getBoundingRect(true), calloutBounds));
+                    }
+                    if (anchorImage === obj) {
+                        calloutStickies.push({
+                            entry,
+                            tipX: tipX - obj.left, tipY: tipY - obj.top,
+                            leg1X2: entry.leg1.x2 - obj.left, leg1Y2: entry.leg1.y2 - obj.top,
+                            leg2X1: entry.leg2.x1 - obj.left, leg2Y1: entry.leg2.y1 - obj.top,
+                            leg2X2: entry.leg2.x2 - obj.left, leg2Y2: entry.leg2.y2 - obj.top,
+                            headX: entry.head.left - obj.left, headY: entry.head.top - obj.top,
+                            frameX: entry.frame.left - obj.left, frameY: entry.frame.top - obj.top,
+                            boxX: entry.box.left - obj.left, boxY: entry.box.top - obj.top
+                        });
+                    }
+                });
+            }
+
+            canvas.on('object:moving', function(options) {
+                updateMultiSelectToolbar();
+                updateImageNameLabel();
+
+                const obj = options.target;
+
+                // Sticky annotations logic (move overlying text/shapes when image moves)
+                if (obj.type === 'image') {
+                    // Normally already computed from mouse:down (see below) — this is only a
+                    // fallback for a move triggered some other way (e.g. arrow keys).
+                    if (!isDraggingSticky) {
+                        computeStickyData(obj);
+                    }
+
+                    // Apply sticky offsets during movement
+                    stickyOffsets.forEach(sticky => {
+                        sticky.obj.set({
+                            left: obj.left + sticky.offsetX,
+                            top: obj.top + sticky.offsetY
+                        });
+                        sticky.obj.setCoords();
+                    });
+
+                    // Rigidly translate the whole callout (tip + leader + frame + box) with the image
+                    calloutStickies.forEach(sticky => {
+                        const e = sticky.entry;
+                        const newTipX = obj.left + sticky.tipX;
+                        const newTipY = obj.top + sticky.tipY;
+                        e.leg1.set({
+                            x1: newTipX, y1: newTipY,
+                            x2: obj.left + sticky.leg1X2, y2: obj.top + sticky.leg1Y2,
+                            tipX: newTipX, tipY: newTipY
+                        });
+                        e.leg1.setCoords();
+                        e.leg2.set({
+                            x1: obj.left + sticky.leg2X1, y1: obj.top + sticky.leg2Y1,
+                            x2: obj.left + sticky.leg2X2, y2: obj.top + sticky.leg2Y2
+                        });
+                        e.leg2.setCoords();
+                        e.head.set({ left: obj.left + sticky.headX, top: obj.top + sticky.headY });
+                        e.head.setCoords();
+                        e.frame.set({ left: obj.left + sticky.frameX, top: obj.top + sticky.frameY });
+                        e.frame.setCoords();
+                        e.box.set({ left: obj.left + sticky.boxX, top: obj.top + sticky.boxY });
+                        e.box.setCoords();
+                    });
+                } else if (obj.calloutRole === 'box') {
+                    // User is dragging just the note itself — the tip stays anchored in
+                    // place and the arrow re-angles live to follow the box.
+                    const entry = calloutRegistry[obj.calloutId];
+                    if (entry) updateCalloutGeometry(entry);
+                } else if (obj.type === 'activeSelection') {
+                    // Dragging a multi-selection fires exactly one 'object:moving' for the
+                    // whole group — neither branch above ever matches, since `obj` here is the
+                    // selection container, not an individual box. Without this, any callout
+                    // box swept into the selection gets moved by Fabric's own group-transform
+                    // math, but its leader/frame (which aren't part of the selection at all)
+                    // never hear about it and are left pointing at a stale position — producing
+                    // exactly the "everything looks messed up" leader-line corruption. Update
+                    // each callout box member directly; getCalloutFrameRect() already resolves
+                    // a grouped object's true canvas position correctly.
+                    obj.getObjects().forEach(member => {
+                        if (member.calloutRole === 'box') {
+                            const entry = calloutRegistry[member.calloutId];
+                            if (entry) updateCalloutGeometry(entry);
+                        }
+                    });
+                }
+
+
+                // Smart-guide alignment snap — always on, only while dragging an image
+                if (obj.type !== 'image') {
+                    clearGuidelines();
+                    return;
+                }
+
+                clearGuidelines();
+                snapToObjects(obj);
+            });
+
+            canvas.on('object:scaling', function(options) {
+                updateMultiSelectToolbar();
+                const obj = options.target;
+                if (obj && obj.calloutRole === 'box') {
+                    // Fabric's `padding` (used to draw the selection border out to the padded
+                    // card, not just the tight text) is a fixed screen-pixel value — it does NOT
+                    // grow with the object's own scale. Left alone, the blue selection outline
+                    // drifts inward from the actual (now-bigger) card the more you scale it up.
+                    // Keep it proportional to scale so the two stay in sync.
+                    obj.padding = CALLOUT_PADDING * obj.scaleX;
+                    const entry = calloutRegistry[obj.calloutId];
+                    if (entry) updateCalloutGeometry(entry);
+                }
+            });
+
+            // Dragging a Textbox's side handles (ml/mr) fires 'object:resizing', not
+            // 'object:scaling' — keep the callout's frame/leader glued to the box as its
+            // wrap width changes.
+            canvas.on('object:resizing', function(options) {
+                updateMultiSelectToolbar();
+                const obj = options.target;
+                if (obj && obj.calloutRole === 'box') {
+                    const entry = calloutRegistry[obj.calloutId];
+                    if (entry) updateCalloutGeometry(entry);
+                }
+            });
+
+            function modifySelection(callback) {
+                const activeSelection = canvas.getActiveObject();
+                if (!activeSelection || activeSelection.type !== 'activeSelection') return;
+                
+                const objs = activeSelection.getObjects();
+
+                // Discard selection so we can modify objects in absolute coordinate space
+                canvas.discardActiveObject();
+
+                callback(objs);
+
+                // These align/distribute/scale operations reposition or rescale each object
+                // directly (not via a fabric drag), so 'object:moving' never fires — any
+                // callout box swept up here needs its frame/leader/arrowhead (separate objects,
+                // not part of the selection) re-synced to its new spot by hand.
+                objs.forEach(obj => {
+                    if (obj.calloutRole === 'box') {
+                        const entry = calloutRegistry[obj.calloutId];
+                        if (entry) updateCalloutGeometry(entry);
+                    }
+                });
+
+                // Re-create the selection grouping with the updated objects
+                const newSelection = new fabric.ActiveSelection(objs, {
+                    canvas: canvas
+                });
+                canvas.setActiveObject(newSelection);
+                canvas.requestRenderAll();
+                saveHistory();
+            }
+
+            // Even gaps between BOUNDING BOXES, not object.left/top directly — objects can have
+            // different origins (images/text are center-origin, shapes are left/top-origin), so
+            // placing by raw left/top alone produces uneven-looking spacing between edges.
+            const LAYOUT_GAP = 36;
+
+            document.getElementById('btn-layout-row').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    objs.sort((a, b) => a.getBoundingRect(true).left - b.getBoundingRect(true).left);
+                    const topY = Math.min(...objs.map(o => o.getBoundingRect(true).top));
+                    let currentLeft = objs[0].getBoundingRect(true).left;
+
+                    objs.forEach(obj => {
+                        const bounds = obj.getBoundingRect(true);
+                        obj.set({
+                            left: currentLeft + (obj.left - bounds.left),
+                            top: topY + (obj.top - bounds.top)
+                        });
+                        obj.setCoords();
+                        currentLeft += bounds.width + LAYOUT_GAP;
+                    });
+                });
+            });
+
+            document.getElementById('btn-layout-col').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    objs.sort((a, b) => a.getBoundingRect(true).top - b.getBoundingRect(true).top);
+                    const leftX = Math.min(...objs.map(o => o.getBoundingRect(true).left));
+                    let currentTop = objs[0].getBoundingRect(true).top;
+
+                    objs.forEach(obj => {
+                        const bounds = obj.getBoundingRect(true);
+                        obj.set({
+                            left: leftX + (obj.left - bounds.left),
+                            top: currentTop + (obj.top - bounds.top)
+                        });
+                        obj.setCoords();
+                        currentTop += bounds.height + LAYOUT_GAP;
+                    });
+                });
+            });
+
+            document.getElementById('btn-align-top').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    const topY = Math.min(...objs.map(o => o.getBoundingRect(true).top));
+                    objs.forEach(obj => {
+                        const bounds = obj.getBoundingRect(true);
+                        obj.set('top', topY + (obj.top - bounds.top));
+                        obj.setCoords();
+                    });
+                });
+            });
+
+            document.getElementById('btn-align-center').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    const topY = Math.min(...objs.map(o => o.getBoundingRect(true).top));
+                    const bottomY = Math.max(...objs.map(o => o.getBoundingRect(true).top + o.getBoundingRect(true).height));
+                    const centerY = topY + (bottomY - topY) / 2;
+                    objs.forEach(obj => {
+                        const bounds = obj.getBoundingRect(true);
+                        const objCenter = bounds.top + bounds.height / 2;
+                        obj.set('top', obj.top + (centerY - objCenter));
+                        obj.setCoords();
+                    });
+                });
+            });
+
+            document.getElementById('btn-align-bottom').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    const bottomY = Math.max(...objs.map(o => o.getBoundingRect(true).top + o.getBoundingRect(true).height));
+                    objs.forEach(obj => {
+                        const bounds = obj.getBoundingRect(true);
+                        const objBottom = bounds.top + bounds.height;
+                        obj.set('top', obj.top + (bottomY - objBottom));
+                        obj.setCoords();
+                    });
+                });
+            });
+
+            document.getElementById('btn-layout-grid').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    // Sort roughly top-to-bottom, left-to-right, by bounding box (origin-safe)
+                    objs.sort((a, b) => {
+                        const ab = a.getBoundingRect(true), bb = b.getBoundingRect(true);
+                        return ab.top - bb.top || ab.left - bb.left;
+                    });
+                    const startX = Math.min(...objs.map(o => o.getBoundingRect(true).left));
+                    const startY = Math.min(...objs.map(o => o.getBoundingRect(true).top));
+
+                    // Create a square-ish grid
+                    const cols = Math.ceil(Math.sqrt(objs.length));
+                    const gap = LAYOUT_GAP;
+
+                    const maxWidth = Math.max(...objs.map(o => o.getBoundingRect(true).width));
+                    const maxHeight = Math.max(...objs.map(o => o.getBoundingRect(true).height));
+
+                    let col = 0, row = 0;
+
+                    objs.forEach(obj => {
+                        const bounds = obj.getBoundingRect(true);
+                        obj.set({
+                            left: startX + col * (maxWidth + gap) + (obj.left - bounds.left),
+                            top: startY + row * (maxHeight + gap) + (obj.top - bounds.top)
+                        });
+                        obj.setCoords();
+
+                        col++;
+                        if (col >= cols) {
+                            col = 0;
+                            row++;
+                        }
+                    });
+                });
+            });
+
+            document.getElementById('btn-scale-width').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    const targetWidth = Math.max(...objs.map(o => o.getScaledWidth()));
+                    objs.forEach(obj => {
+                        const scale = targetWidth / obj.width;
+                        obj.set({ scaleX: scale, scaleY: scale });
+                        obj.setCoords();
+                    });
+                });
+            });
+
+            document.getElementById('btn-scale-height').addEventListener('click', () => {
+                modifySelection((objs) => {
+                    const targetHeight = Math.max(...objs.map(o => o.getScaledHeight()));
+                    objs.forEach(obj => {
+                        const scale = targetHeight / obj.height;
+                        obj.set({ scaleX: scale, scaleY: scale });
+                        obj.setCoords();
+                    });
+                });
+            });
+
+            // Creates a new before/after compare widget from two images. The two source images
+            // are left completely untouched — this only reads their current positions (via
+            // getAbsoluteBoundingRect, since they may be group-relative while part of an
+            // activeSelection) to size/place the new widget beneath them.
+            function createCompareWidget(imgA, imgB) {
+                const rectA = getAbsoluteBoundingRect(imgA);
+                const rectB = getAbsoluteBoundingRect(imgB);
+
+                // Shared target aspect ratio for the widget: the average of the two images'
+                // own aspect ratios, so neither one's crop dominates when they differ a lot.
+                const targetAspect = (rectA.width / rectA.height + rectB.width / rectB.height) / 2;
+                const targetWidth = (rectA.width + rectB.width) / 2;
+                const targetHeight = targetWidth / targetAspect;
+
+                // Center it directly beneath the union of both images' bounds.
+                const unionLeft = Math.min(rectA.left, rectB.left);
+                const unionRight = Math.max(rectA.left + rectA.width, rectB.left + rectB.width);
+                const unionBottom = Math.max(rectA.top + rectA.height, rectB.top + rectB.height);
+                const margin = 40;
+
+                const compare = new fabric.CompareSlider(imgA.getElement(), imgB.getElement(), {
+                    left: (unionLeft + unionRight) / 2,
+                    top: unionBottom + margin + targetHeight / 2,
+                    originX: 'center', originY: 'center',
+                    width: targetWidth, height: targetHeight,
+                    imgAName: imgA.sourceFileName || 'Image A',
+                    imgBName: imgB.sourceFileName || 'Image B',
+                    stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth,
+                    cornerColor: '#3b82f6', borderColor: '#3b82f6', transparentCorners: false
+                });
+
+                canvas.discardActiveObject();
+                canvas.add(compare);
+                canvas.setActiveObject(compare);
+                canvas.requestRenderAll();
+                saveHistory();
+            }
+
+            const comparePickHint = document.getElementById('compare-pick-hint');
+
+            function startComparePicking(image) {
+                isPickingCompareTarget = true;
+                comparePickSource = image;
+                canvas.discardActiveObject();
+                canvas.defaultCursor = 'crosshair';
+                comparePickHint.classList.remove('hidden');
+                canvas.requestRenderAll();
+            }
+
+            function cancelComparePicking() {
+                isPickingCompareTarget = false;
+                comparePickSource = null;
+                canvas.defaultCursor = 'default';
+                comparePickHint.classList.add('hidden');
+                if (comparePickHoverTarget) {
+                    comparePickHoverTarget.set('shadow', null);
+                    comparePickHoverTarget = null;
+                    canvas.requestRenderAll();
+                }
+            }
+
+            // While picking a compare partner, hovering a valid candidate image glows it so
+            // it's clear which image a click will pair with.
+            canvas.on('mouse:over', function(o) {
+                if (!isPickingCompareTarget || !o.target || o.target.type !== 'image' || o.target === comparePickSource) return;
+                comparePickHoverTarget = o.target;
+                o.target.set('shadow', new fabric.Shadow({ color: '#3b82f6', blur: 30, offsetX: 0, offsetY: 0 }));
+                canvas.requestRenderAll();
+            });
+
+            canvas.on('mouse:out', function(o) {
+                if (comparePickHoverTarget && o.target === comparePickHoverTarget) {
+                    comparePickHoverTarget.set('shadow', null);
+                    comparePickHoverTarget = null;
+                    canvas.requestRenderAll();
+                }
+            });
+
+            document.getElementById('btn-compare').addEventListener('click', () => {
+                const activeObj = canvas.getActiveObject();
+                if (!activeObj) return;
+
+                if (activeObj.type === 'activeSelection') {
+                    const members = activeObj.getObjects();
+                    if (members.length !== 2 || !members.every(o => o.type === 'image')) return;
+                    createCompareWidget(members[0], members[1]);
+                    return;
+                }
+
+                if (activeObj.type === 'image') {
+                    startComparePicking(activeObj);
+                }
+            });
+
+        });
+    </script>
+</body>
+</html>
