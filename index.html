@@ -258,16 +258,15 @@
             transform: translateY(0);
         }
 
-        /* App-level views: home (projects) / project (boards) / board (stage pipeline) /
-           editor (the existing canvas tool). Exactly one is display:flex at a time, switched
-           by showView() — see the JS below. */
-        #view-home, #view-project, #view-board, #view-editor {
+        /* App-level views: home (projects) / project (shots) / editor (the canvas tool).
+           Exactly one is display:flex at a time, switched by showView() — see the JS below. */
+        #view-home, #view-project, #view-editor {
             display: none;
             flex-direction: column;
             height: 100%;
             width: 100%;
         }
-        #view-home, #view-project, #view-board {
+        #view-home, #view-project {
             position: fixed;
             inset: 0;
             z-index: 15;
@@ -289,10 +288,33 @@
             border-color: #3b82f6;
             transform: translateY(-2px);
         }
-
-        .stage-card {
-            background: rgba(17, 24, 39, 0.7);
+        /* Home page's project list: a centered, scrollable column of full-width rows
+           instead of the boards grid's square cards. */
+        .project-card.project-row {
+            flex-direction: row;
+            align-items: center;
+            width: 100%;
         }
+
+        .modal-input {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid #374151;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 13px;
+            color: #e5e7eb;
+            outline: none;
+            font-family: inherit;
+        }
+        .modal-input:focus { border-color: #3b82f6; }
+        .modal-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #9ca3af;
+        }
+
         .history-item {
             display: flex;
             align-items: center;
@@ -321,12 +343,12 @@
             </button>
         </header>
         <div class="relative z-10 flex-1 overflow-y-auto p-8">
-            <div id="project-grid" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));"></div>
+            <div id="project-grid" class="flex flex-col gap-3 max-w-md mx-auto"></div>
             <div id="project-empty" class="hidden text-gray-500 text-sm mt-10 text-center">No projects yet — click "New Project" to get started.</div>
         </div>
     </div>
 
-    <!-- Project: pick a board (image), or create a new one -->
+    <!-- Project: pick a shot (board), or add more to the shot list -->
     <div id="view-project">
         <div class="grid-background" style="position:fixed;"></div>
         <header class="h-16 bg-gray-950/95 backdrop-blur-sm border-b border-gray-800 flex items-center justify-between px-6 z-20 shadow-xl shrink-0">
@@ -335,26 +357,27 @@
                 <h1 id="project-title" class="text-sm font-semibold text-gray-100 truncate">Project</h1>
             </div>
             <button id="btn-new-board" class="toolbar-btn toolbar-btn-primary">
-                <i class="fa-solid fa-plus"></i><span>New Board</span>
+                <i class="fa-solid fa-plus"></i><span>Add Shots</span>
             </button>
         </header>
         <div class="relative z-10 flex-1 overflow-y-auto p-8">
             <div id="board-grid" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));"></div>
-            <div id="board-empty" class="hidden text-gray-500 text-sm mt-10 text-center">No boards yet — click "New Board" to add S010.</div>
+            <div id="board-empty" class="hidden text-gray-500 text-sm mt-10 text-center">No shots yet — click "Add Shots" to get started.</div>
         </div>
     </div>
 
-    <!-- Board: the Whitecard -> WIP -> ICD -> WIP -> R01 -> WIP -> R02 -> WIP -> Final pipeline -->
-    <div id="view-board">
-        <div class="grid-background" style="position:fixed;"></div>
-        <header class="h-16 bg-gray-950/95 backdrop-blur-sm border-b border-gray-800 flex items-center justify-between px-6 z-20 shadow-xl shrink-0">
-            <div class="flex items-center gap-3 min-w-0">
-                <button id="btn-board-back" class="toolbar-icon-btn" data-tooltip="Back to project"><i class="fa-solid fa-arrow-left"></i></button>
-                <h1 id="board-title" class="text-sm font-semibold text-gray-100 truncate">S010</h1>
+    <!-- Generic in-app dialog, used instead of native prompt()/confirm() popups -->
+    <div id="app-modal" class="hidden fixed inset-0 z-[110] items-center justify-center bg-black/60 backdrop-blur-sm">
+        <div class="bg-gray-950 border border-gray-700 rounded-lg shadow-2xl w-[90vw] max-w-md flex flex-col">
+            <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+                <h2 id="app-modal-title" class="text-sm font-semibold text-gray-100">Title</h2>
+                <button id="app-modal-close" class="text-gray-500 hover:text-white transition-colors"><i class="fa-solid fa-xmark text-base"></i></button>
             </div>
-        </header>
-        <div class="relative z-10 flex-1 overflow-y-auto p-8">
-            <div id="stage-list" class="flex flex-col gap-5 max-w-xl mx-auto"></div>
+            <div id="app-modal-body" class="p-5 flex flex-col gap-4"></div>
+            <div class="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-gray-800">
+                <button id="app-modal-cancel" class="h-8 px-3 rounded text-xs font-medium text-gray-300 hover:bg-gray-800 transition-colors">Cancel</button>
+                <button id="app-modal-confirm" class="h-8 px-3.5 rounded bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white transition-colors">Create</button>
+            </div>
         </div>
     </div>
 
@@ -772,30 +795,17 @@
                 if (error) throw error;
             }
 
-            // --- Projects / Boards / Stages data model ----------------------------------------
-            // _index.json                         -> { projects: [{id, name, createdAt}] }
-            // _project-<id>.json                  -> { id, name, createdAt, boards: [{id, name, createdAt}] }
-            // _board-<id>.json                    -> { id, projectId, name, createdAt, stages: { <stageKey>: { versions: [{id, savedAt}] } } }
-            // _version-<id>.json                  -> { canvasJson, savedAt }   (full board contents — can be large)
-            // _thumb-<id>.json                     -> { thumb, savedAt }        (small dataURL, kept separate so the
-            //                                                                     board pipeline view is cheap to load)
-            const STAGE_DEFS = [
-                { key: 'whitecard', label: 'Whitecard' },
-                { key: 'wip1', label: 'WIP' },
-                { key: 'icd', label: 'ICD' },
-                { key: 'wip2', label: 'WIP' },
-                { key: 'r01', label: 'R01' },
-                { key: 'wip3', label: 'WIP' },
-                { key: 'r02', label: 'R02' },
-                { key: 'wip4', label: 'WIP' },
-                { key: 'final', label: 'Final' }
-            ];
-
-            function emptyStages() {
-                const stages = {};
-                STAGE_DEFS.forEach(s => { stages[s.key] = { versions: [] }; });
-                return stages;
-            }
+            // --- Projects / Boards data model -------------------------------------------------
+            // _index.json            -> { projects: [{id, name, createdAt}] }
+            // _project-<id>.json     -> { id, name, createdAt, boards: [{id, code, label, createdAt}] }
+            // _board-<id>.json       -> { id, projectId, code, label, createdAt, versions: [{id, savedAt}] }
+            // _version-<id>.json     -> { canvasJson, savedAt }   (full board contents — can be large)
+            // _thumb-<id>.json       -> { thumb, savedAt }        (small dataURL, kept separate so lists stay cheap)
+            //
+            // NOTE: the Whitecard/WIP/ICD/R01/R02/Final stage pipeline has been pulled out for
+            // now — each shot (board) is a single canvas until the home/project navigation and
+            // shot-list workflow below are settled. Re-add a per-stage layer on top of this once
+            // that's solid.
 
             function formatTimestamp(iso) {
                 if (!iso) return '';
@@ -804,17 +814,57 @@
                     d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
             }
 
-            // App-level navigation between the four views. Exactly one is visible at a time.
+            // --- Generic in-app modal (replaces native prompt()/confirm() popups) --------------
+            const appModal = document.getElementById('app-modal');
+            const appModalTitle = document.getElementById('app-modal-title');
+            const appModalBody = document.getElementById('app-modal-body');
+            const appModalConfirm = document.getElementById('app-modal-confirm');
+            const appModalCancel = document.getElementById('app-modal-cancel');
+            const appModalClose = document.getElementById('app-modal-close');
+
+            function closeModal() {
+                appModal.classList.add('hidden');
+                appModal.classList.remove('flex');
+                appModalBody.innerHTML = '';
+                appModalConfirm.onclick = null;
+            }
+
+            // options: { title, confirmText, bodyHtml, focusSelector, onConfirm(bodyEl) }
+            // onConfirm may return `false` (or a Promise resolving to `false`) to keep the
+            // modal open — e.g. after showing a validation error via showShareToast.
+            function openModal(options) {
+                appModalTitle.textContent = options.title;
+                appModalBody.innerHTML = options.bodyHtml;
+                appModalConfirm.textContent = options.confirmText || 'Create';
+                appModal.classList.remove('hidden');
+                appModal.classList.add('flex');
+                if (options.focusSelector) {
+                    setTimeout(() => { const el = appModalBody.querySelector(options.focusSelector); if (el) el.focus(); }, 30);
+                }
+                appModalConfirm.onclick = async () => {
+                    const result = await options.onConfirm(appModalBody);
+                    if (result !== false) closeModal();
+                };
+            }
+
+            appModalCancel.addEventListener('click', closeModal);
+            appModalClose.addEventListener('click', closeModal);
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && !appModal.classList.contains('hidden')) closeModal();
+            });
+
+            // Parses a shot-list textarea: one shot name per non-blank line.
+            function parseShotList(text) {
+                return text.split('\n').map(s => s.trim()).filter(Boolean);
+            }
+
+            // App-level navigation between the three views. Exactly one is visible at a time.
             const appViews = {
                 home: document.getElementById('view-home'),
                 project: document.getElementById('view-project'),
-                board: document.getElementById('view-board'),
                 editor: document.getElementById('view-editor')
             };
-            const appState = { projectId: null, projectName: '', boardId: null, boardName: '', stageKey: null, versionId: null };
-            // Which version index each stage card is currently showing while browsing the board
-            // pipeline view (independent of which one is actually open in the editor).
-            let stageBrowseIndex = {};
+            const appState = { projectId: null, projectName: '', boardId: null, boardLabel: '', versionId: null };
 
             function showView(name) {
                 Object.entries(appViews).forEach(([k, el]) => { el.style.display = (k === name) ? 'flex' : 'none'; });
@@ -839,38 +889,72 @@
                 projectEmpty.classList.toggle('hidden', index.projects.length > 0);
                 index.projects.slice().reverse().forEach(p => {
                     const card = document.createElement('div');
-                    card.className = 'project-card';
+                    card.className = 'project-card project-row';
                     card.innerHTML = `
-                        <div class="flex items-center gap-2 text-blue-400"><i class="fa-solid fa-folder-open"></i></div>
-                        <div class="text-sm font-semibold text-gray-100 truncate">${p.name}</div>
-                        <div class="text-[11px] text-gray-500">Created ${formatTimestamp(p.createdAt)}</div>`;
+                        <div class="text-blue-400"><i class="fa-solid fa-folder-open"></i></div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-sm font-semibold text-gray-100 truncate">${p.name}</div>
+                            <div class="text-[11px] text-gray-500">Created ${formatTimestamp(p.createdAt)}</div>
+                        </div>
+                        <i class="fa-solid fa-chevron-right text-gray-600 text-xs"></i>`;
                     card.addEventListener('click', () => openProject(p.id, p.name));
                     projectGrid.appendChild(card);
                 });
             }
 
-            document.getElementById('btn-new-project').addEventListener('click', async () => {
-                const name = prompt('Project name:');
-                if (!name || !name.trim()) return;
+            function codeForIndex(i) {
+                return 'S' + String((i + 1) * 10).padStart(3, '0');
+            }
+
+            async function createProject(name, shotLabels) {
                 showShareToast('Creating project…');
                 try {
                     const index = await loadIndex();
                     const id = newId();
                     const createdAt = new Date().toISOString();
-                    index.projects.push({ id, name: name.trim(), createdAt });
+                    index.projects.push({ id, name, createdAt });
                     await storagePutJSON('_index.json', index);
-                    await storagePutJSON(`_project-${id}.json`, { id, name: name.trim(), createdAt, boards: [] });
+
+                    const boards = shotLabels.map((label, i) => ({ id: newId(), code: codeForIndex(i), label, createdAt }));
+                    await storagePutJSON(`_project-${id}.json`, { id, name, createdAt, boards });
+                    await Promise.all(boards.map(b =>
+                        storagePutJSON(`_board-${b.id}.json`, { id: b.id, projectId: id, code: b.code, label: b.label, createdAt, versions: [] })
+                    ));
+
                     shareToast.classList.add('hidden');
-                    openProject(id, name.trim());
+                    openProject(id, name);
                 } catch (err) {
                     console.error('Create project failed:', err);
                     showShareToast('Could not create project — see console for details', true);
                 }
+            }
+
+            document.getElementById('btn-new-project').addEventListener('click', () => {
+                openModal({
+                    title: 'New Project',
+                    confirmText: 'Create Project',
+                    focusSelector: '#modal-project-name',
+                    bodyHtml: `
+                        <label class="flex flex-col gap-1.5">
+                            <span class="modal-label">Project Name</span>
+                            <input id="modal-project-name" type="text" class="modal-input" placeholder="e.g. 123 Main St">
+                        </label>
+                        <label class="flex flex-col gap-1.5">
+                            <span class="modal-label">Shot List</span>
+                            <textarea id="modal-shot-list" rows="6" class="modal-input" style="resize:none;" placeholder="One shot per line, e.g.&#10;Living Room&#10;Kitchen&#10;Master Bedroom"></textarea>
+                            <span class="text-[11px] text-gray-500">Each line becomes a shot (S010, S020, ...). You can add more later.</span>
+                        </label>`,
+                    onConfirm: async (body) => {
+                        const name = body.querySelector('#modal-project-name').value.trim();
+                        if (!name) { showShareToast('Project name is required', true); return false; }
+                        const shotLabels = parseShotList(body.querySelector('#modal-shot-list').value);
+                        await createProject(name, shotLabels);
+                    }
+                });
             });
 
             document.getElementById('btn-project-back').addEventListener('click', () => { showView('home'); renderHome(); });
-            document.getElementById('btn-board-back').addEventListener('click', () => { showView('project'); renderProject(); });
-            document.getElementById('btn-editor-back').addEventListener('click', () => { showView('board'); renderBoard(); });
+            document.getElementById('btn-editor-back').addEventListener('click', () => { showView('project'); renderProject(); });
 
             async function openProject(id, name) {
                 appState.projectId = id;
@@ -879,7 +963,7 @@
                 await renderProject();
             }
 
-            // --- Project view: boards (S010, S020, ...) -----------------------------------------
+            // --- Project view: shots (S010, S020, ...) ------------------------------------------
             const boardGrid = document.getElementById('board-grid');
             const boardEmpty = document.getElementById('board-empty');
             const projectTitle = document.getElementById('project-title');
@@ -888,181 +972,98 @@
                 return await storageGetJSON(`_project-${appState.projectId}.json`);
             }
 
-            function nextBoardName(boards) {
-                const max = boards.reduce((m, b) => {
-                    const n = parseInt((b.name || '').replace(/^S/i, ''), 10);
-                    return isNaN(n) ? m : Math.max(m, n);
-                }, 0);
-                return 'S' + String(max + 10).padStart(3, '0');
-            }
-
             async function renderProject() {
                 projectTitle.textContent = appState.projectName;
                 boardGrid.innerHTML = '';
                 const project = await loadProject();
                 if (!project) return;
                 boardEmpty.classList.toggle('hidden', project.boards.length > 0);
-                project.boards.slice().reverse().forEach(b => {
+                project.boards.forEach(b => {
                     const card = document.createElement('div');
                     card.className = 'board-card';
                     card.innerHTML = `
                         <div class="flex items-center gap-2 text-blue-400"><i class="fa-solid fa-image"></i></div>
-                        <div class="text-sm font-semibold text-gray-100 truncate">${b.name}</div>
-                        <div class="text-[11px] text-gray-500">Created ${formatTimestamp(b.createdAt)}</div>`;
-                    card.addEventListener('click', () => openBoard(b.id, b.name));
+                        <div class="text-sm font-semibold text-gray-100 truncate">${b.code}</div>
+                        <div class="text-xs text-gray-400 truncate">${b.label || ''}</div>`;
+                    card.addEventListener('click', () => openBoard(b));
                     boardGrid.appendChild(card);
                 });
             }
 
-            document.getElementById('btn-new-board').addEventListener('click', async () => {
-                showShareToast('Creating board…');
-                try {
-                    const project = await loadProject();
-                    const id = newId();
-                    const createdAt = new Date().toISOString();
-                    const name = nextBoardName(project.boards);
-                    project.boards.push({ id, name, createdAt });
-                    await storagePutJSON(`_project-${appState.projectId}.json`, project);
-                    await storagePutJSON(`_board-${id}.json`, { id, projectId: appState.projectId, name, createdAt, stages: emptyStages() });
-                    shareToast.classList.add('hidden');
-                    openBoard(id, name);
-                } catch (err) {
-                    console.error('Create board failed:', err);
-                    showShareToast('Could not create board — see console for details', true);
-                }
+            document.getElementById('btn-new-board').addEventListener('click', () => {
+                openModal({
+                    title: 'Add Shots',
+                    confirmText: 'Add',
+                    focusSelector: '#modal-shot-list',
+                    bodyHtml: `
+                        <label class="flex flex-col gap-1.5">
+                            <span class="modal-label">Shot List</span>
+                            <textarea id="modal-shot-list" rows="6" class="modal-input" style="resize:none;" placeholder="One shot per line"></textarea>
+                        </label>`,
+                    onConfirm: async (body) => {
+                        const shotLabels = parseShotList(body.querySelector('#modal-shot-list').value);
+                        if (shotLabels.length === 0) { showShareToast('Enter at least one shot name', true); return false; }
+                        showShareToast('Adding shots…');
+                        try {
+                            const project = await loadProject();
+                            const maxN = project.boards.reduce((m, b) => {
+                                const n = parseInt((b.code || '').replace(/^S/i, ''), 10);
+                                return isNaN(n) ? m : Math.max(m, n);
+                            }, 0);
+                            const createdAt = new Date().toISOString();
+                            const newBoards = shotLabels.map((label, i) => ({
+                                id: newId(), code: 'S' + String(maxN + (i + 1) * 10).padStart(3, '0'), label, createdAt
+                            }));
+                            project.boards.push(...newBoards);
+                            await storagePutJSON(`_project-${appState.projectId}.json`, project);
+                            await Promise.all(newBoards.map(b =>
+                                storagePutJSON(`_board-${b.id}.json`, { id: b.id, projectId: appState.projectId, code: b.code, label: b.label, createdAt, versions: [] })
+                            ));
+                            shareToast.classList.add('hidden');
+                            renderProject();
+                        } catch (err) {
+                            console.error('Add shots failed:', err);
+                            showShareToast('Could not add shots — see console for details', true);
+                            return false;
+                        }
+                    }
+                });
             });
 
-            async function openBoard(id, name) {
-                appState.boardId = id;
-                appState.boardName = name;
-                stageBrowseIndex = {};
-                showView('board');
-                await renderBoard();
+            function openBoard(b) {
+                appState.boardId = b.id;
+                appState.boardLabel = b.label ? `${b.code} — ${b.label}` : b.code;
+                openBoardEditor();
             }
 
-            // --- Board view: the stage pipeline (Whitecard -> WIP -> ICD -> ... -> Final) -----
-            const stageList = document.getElementById('stage-list');
-            const boardTitle = document.getElementById('board-title');
+            // --- Editor: open/save the current shot's board -------------------------------------
+            const editorBreadcrumb = document.getElementById('editor-breadcrumb');
             let currentBoardData = null;
 
             async function loadBoard() {
                 return await storageGetJSON(`_board-${appState.boardId}.json`);
             }
 
-            async function renderBoard() {
-                boardTitle.textContent = `${appState.projectName} / ${appState.boardName}`;
-                stageList.innerHTML = '';
-                currentBoardData = await loadBoard();
-                if (!currentBoardData) return;
-                STAGE_DEFS.forEach(def => stageList.appendChild(buildStageCard(def)));
-                await Promise.all(STAGE_DEFS.map(def => refreshStageCardThumb(def.key)));
-            }
-
-            function buildStageCard(def) {
-                const card = document.createElement('div');
-                card.className = 'stage-card border border-gray-800 rounded-xl p-4 flex flex-col gap-3';
-                card.dataset.stageKey = def.key;
-                card.innerHTML = `
-                    <div class="flex items-center justify-between">
-                        <span class="text-xs font-semibold uppercase tracking-wide text-gray-400">${def.label}</span>
-                        <span class="text-[11px] text-gray-500 stage-timestamp"></span>
-                    </div>
-                    <div class="relative rounded-lg overflow-hidden bg-black/40 border border-gray-800 flex items-center justify-center" style="aspect-ratio:16/10;">
-                        <img class="stage-thumb-img hidden max-w-full max-h-full object-contain" />
-                        <div class="stage-thumb-empty text-gray-600 text-xs">No versions yet</div>
-                        <button class="stage-arrow-left absolute left-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-black/60 hover:bg-black/80 text-gray-300 flex items-center justify-center"><i class="fa-solid fa-chevron-left text-xs"></i></button>
-                        <button class="stage-arrow-right absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-black/60 hover:bg-black/80 text-gray-300 flex items-center justify-center"><i class="fa-solid fa-chevron-right text-xs"></i></button>
-                    </div>
-                    <div class="flex items-center justify-between">
-                        <span class="text-[11px] text-gray-500 stage-version-index"></span>
-                        <div class="flex items-center gap-2">
-                            <button class="stage-open-btn toolbar-btn"><i class="fa-solid fa-pen"></i><span>Open</span></button>
-                            <button class="stage-new-btn toolbar-btn"><i class="fa-solid fa-plus"></i><span>New</span></button>
-                        </div>
-                    </div>`;
-                card.querySelector('.stage-arrow-left').addEventListener('click', () => stepStageBrowse(def.key, -1));
-                card.querySelector('.stage-arrow-right').addEventListener('click', () => stepStageBrowse(def.key, 1));
-                card.querySelector('.stage-open-btn').addEventListener('click', () => openStageVersion(def, stageBrowseVersion(def.key)));
-                card.querySelector('.stage-new-btn').addEventListener('click', () => openStageVersion(def, null));
-                return card;
-            }
-
-            function stageBrowseVersion(stageKey) {
-                const versions = currentBoardData.stages[stageKey].versions;
-                if (versions.length === 0) return null;
-                const idx = stageBrowseIndex[stageKey] !== undefined ? stageBrowseIndex[stageKey] : versions.length - 1;
-                return versions[Math.max(0, Math.min(idx, versions.length - 1))];
-            }
-
-            function stepStageBrowse(stageKey, delta) {
-                const versions = currentBoardData.stages[stageKey].versions;
-                if (versions.length === 0) return;
-                const cur = stageBrowseIndex[stageKey] !== undefined ? stageBrowseIndex[stageKey] : versions.length - 1;
-                stageBrowseIndex[stageKey] = Math.max(0, Math.min(cur + delta, versions.length - 1));
-                refreshStageCardThumb(stageKey);
-            }
-
-            async function refreshStageCardThumb(stageKey) {
-                const card = stageList.querySelector(`[data-stage-key="${stageKey}"]`);
-                if (!card) return;
-                const versions = currentBoardData.stages[stageKey].versions;
-                const img = card.querySelector('.stage-thumb-img');
-                const empty = card.querySelector('.stage-thumb-empty');
-                const ts = card.querySelector('.stage-timestamp');
-                const idxLabel = card.querySelector('.stage-version-index');
-                const leftBtn = card.querySelector('.stage-arrow-left');
-                const rightBtn = card.querySelector('.stage-arrow-right');
-
-                if (versions.length === 0) {
-                    img.classList.add('hidden');
-                    empty.classList.remove('hidden');
-                    ts.textContent = '';
-                    idxLabel.textContent = 'No versions';
-                    leftBtn.disabled = true; rightBtn.disabled = true;
-                    leftBtn.style.opacity = 0.3; rightBtn.style.opacity = 0.3;
-                    return;
-                }
-                const idx = stageBrowseIndex[stageKey] !== undefined ? stageBrowseIndex[stageKey] : versions.length - 1;
-                const version = versions[idx];
-                ts.textContent = formatTimestamp(version.savedAt);
-                idxLabel.textContent = `Version ${idx + 1} of ${versions.length}`;
-                leftBtn.style.opacity = idx === 0 ? 0.3 : 1;
-                rightBtn.style.opacity = idx === versions.length - 1 ? 0.3 : 1;
-
-                try {
-                    const thumbData = await storageGetJSON(`_thumb-${version.id}.json`);
-                    if (thumbData && thumbData.thumb) {
-                        img.src = thumbData.thumb;
-                        img.classList.remove('hidden');
-                        empty.classList.add('hidden');
-                    }
-                } catch (err) {
-                    console.error('Load thumbnail failed:', err);
-                }
-            }
-
-            // --- Editor: open/save a specific stage + version -----------------------------------
-            const editorBreadcrumb = document.getElementById('editor-breadcrumb');
-            let currentStageDef = null;
-
-            async function openStageVersion(def, versionEntry) {
-                appState.stageKey = def.key;
-                appState.versionId = versionEntry ? versionEntry.id : null;
-                currentStageDef = def;
+            async function openBoardEditor() {
                 showView('editor');
-                editorBreadcrumb.textContent = `${appState.projectName} / ${appState.boardName} / ${def.label}`;
+                editorBreadcrumb.textContent = `${appState.projectName} / ${appState.boardLabel}`;
 
                 canvas.clear();
                 calloutRegistry = {};
                 internalClipboard = null;
                 history = [];
                 currentState = null;
+                appState.versionId = null;
 
-                if (versionEntry) {
-                    showShareToast('Loading version…');
-                    try {
-                        const v = await storageGetJSON(`_version-${versionEntry.id}.json`);
+                showShareToast('Loading…');
+                try {
+                    currentBoardData = await loadBoard();
+                    const versions = (currentBoardData && currentBoardData.versions) || [];
+                    const latest = versions[versions.length - 1];
+                    if (latest) {
+                        const v = await storageGetJSON(`_version-${latest.id}.json`);
                         if (v && v.canvasJson) {
+                            appState.versionId = latest.id;
                             canvas.loadFromJSON(v.canvasJson, function() {
                                 canvas.renderAll();
                                 rebuildCalloutRegistry();
@@ -1073,13 +1074,14 @@
                         } else {
                             shareToast.classList.add('hidden');
                         }
-                    } catch (err) {
-                        console.error('Load version failed:', err);
-                        showShareToast('Could not load that version', true);
+                    } else {
+                        canvas.renderAll();
+                        updateActionButtons();
+                        shareToast.classList.add('hidden');
                     }
-                } else {
-                    canvas.renderAll();
-                    updateActionButtons();
+                } catch (err) {
+                    console.error('Load board failed:', err);
+                    showShareToast('Could not load that shot', true);
                 }
                 renderHistoryPopup();
             }
@@ -1089,7 +1091,7 @@
                     showShareToast('Save is not configured yet — add your Supabase project config in index.html', true);
                     return;
                 }
-                if (!appState.boardId || !appState.stageKey) return;
+                if (!appState.boardId) return;
                 showShareToast('Saving…');
                 try {
                     const canvasJson = canvas.toJSON(['calloutId', 'calloutRole', 'tipX', 'tipY']);
@@ -1101,7 +1103,7 @@
                     await storagePutJSON(`_thumb-${id}.json`, { thumb, savedAt });
 
                     const board = await loadBoard();
-                    board.stages[appState.stageKey].versions.push({ id, savedAt });
+                    board.versions.push({ id, savedAt });
                     await storagePutJSON(`_board-${appState.boardId}.json`, board);
                     currentBoardData = board;
 
@@ -1121,14 +1123,13 @@
 
             document.getElementById('btn-share').addEventListener('click', saveCurrentVersion);
 
-            // --- Version history popup (per stage) ----------------------------------------------
+            // --- Version history popup -----------------------------------------------------------
             const historyPopup = document.getElementById('history-popup');
             const btnHistory = document.getElementById('btn-history');
 
             function renderHistoryPopup() {
                 historyPopup.innerHTML = '';
-                if (!currentBoardData || !appState.stageKey) return;
-                const versions = currentBoardData.stages[appState.stageKey].versions;
+                const versions = (currentBoardData && currentBoardData.versions) || [];
                 if (versions.length === 0) {
                     historyPopup.innerHTML = '<div class="history-item" style="cursor:default;">No saves yet</div>';
                     return;
@@ -1137,9 +1138,29 @@
                     const item = document.createElement('div');
                     item.className = 'history-item' + (v.id === appState.versionId ? ' current' : '');
                     item.innerHTML = `<span>${formatTimestamp(v.savedAt)}</span>${v.id === appState.versionId ? '<i class="fa-solid fa-check"></i>' : ''}`;
-                    item.addEventListener('click', () => {
+                    item.addEventListener('click', async () => {
                         historyPopup.classList.add('hidden');
-                        openStageVersion(currentStageDef, v);
+                        showShareToast('Loading version…');
+                        try {
+                            const data = await storageGetJSON(`_version-${v.id}.json`);
+                            if (data && data.canvasJson) {
+                                canvas.clear();
+                                calloutRegistry = {};
+                                history = [];
+                                appState.versionId = v.id;
+                                canvas.loadFromJSON(data.canvasJson, function() {
+                                    canvas.renderAll();
+                                    rebuildCalloutRegistry();
+                                    currentState = JSON.stringify(data.canvasJson);
+                                    updateActionButtons();
+                                    shareToast.classList.add('hidden');
+                                    renderHistoryPopup();
+                                });
+                            }
+                        } catch (err) {
+                            console.error('Load version failed:', err);
+                            showShareToast('Could not load that version', true);
+                        }
                     });
                     historyPopup.appendChild(item);
                 });
