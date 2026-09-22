@@ -338,9 +338,16 @@
         <div class="grid-background" style="position:fixed;"></div>
         <header class="h-16 bg-gray-950/95 backdrop-blur-sm border-b border-gray-800 flex items-center justify-between px-6 z-20 shadow-xl shrink-0">
             <h1 class="text-sm font-semibold text-gray-100 tracking-wide">Projects</h1>
-            <button id="btn-new-project" class="toolbar-btn toolbar-btn-primary">
-                <i class="fa-solid fa-plus"></i><span>New Project</span>
-            </button>
+            <div class="flex items-center gap-2">
+                <select id="project-sort" class="bg-gray-800 text-xs text-gray-300 border border-gray-700 rounded px-2 py-1.5 outline-none cursor-pointer" data-tooltip="Sort projects">
+                    <option value="recent">Recent</option>
+                    <option value="name">Name (A–Z)</option>
+                    <option value="created">Date Created</option>
+                </select>
+                <button id="btn-new-project" class="toolbar-btn toolbar-btn-primary">
+                    <i class="fa-solid fa-plus"></i><span>New Project</span>
+                </button>
+            </div>
         </header>
         <div class="relative z-10 flex-1 overflow-y-auto p-8">
             <div id="project-grid" class="flex flex-col gap-3 max-w-md mx-auto"></div>
@@ -814,6 +821,19 @@
                     d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
             }
 
+            // Project/board names come from anyone with the shared bucket's link (no auth), so
+            // they're untrusted — never interpolate them into innerHTML directly.
+            function escapeHtml(str) {
+                return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+            }
+
+            function safeLocalGet(key, fallback) {
+                try { return localStorage.getItem(key) || fallback; } catch (_) { return fallback; }
+            }
+            function safeLocalSet(key, value) {
+                try { localStorage.setItem(key, value); } catch (_) { /* private mode, quota, etc. — non-fatal */ }
+            }
+
             // --- Generic in-app modal (replaces native prompt()/confirm() popups) --------------
             const appModal = document.getElementById('app-modal');
             const appModalTitle = document.getElementById('app-modal-title');
@@ -829,13 +849,21 @@
                 appModalConfirm.onclick = null;
             }
 
-            // options: { title, confirmText, bodyHtml, focusSelector, onConfirm(bodyEl) }
+            // options: { title, confirmText, danger, bodyHtml | bodyBuilder(bodyEl), focusSelector, onConfirm(bodyEl) }
+            // Prefer bodyBuilder (DOM APIs) over bodyHtml whenever user-supplied text is involved
+            // — bodyHtml is only for static, hand-written markup with no interpolated data.
             // onConfirm may return `false` (or a Promise resolving to `false`) to keep the
             // modal open — e.g. after showing a validation error via showShareToast.
             function openModal(options) {
                 appModalTitle.textContent = options.title;
-                appModalBody.innerHTML = options.bodyHtml;
+                appModalBody.innerHTML = '';
+                if (options.bodyBuilder) options.bodyBuilder(appModalBody);
+                else appModalBody.innerHTML = options.bodyHtml || '';
                 appModalConfirm.textContent = options.confirmText || 'Create';
+                appModalConfirm.classList.toggle('bg-red-600', !!options.danger);
+                appModalConfirm.classList.toggle('hover:bg-red-500', !!options.danger);
+                appModalConfirm.classList.toggle('bg-blue-600', !options.danger);
+                appModalConfirm.classList.toggle('hover:bg-blue-500', !options.danger);
                 appModal.classList.remove('hidden');
                 appModal.classList.add('flex');
                 if (options.focusSelector) {
@@ -853,9 +881,65 @@
                 if (e.key === 'Escape' && !appModal.classList.contains('hidden')) closeModal();
             });
 
-            // Parses a shot-list textarea: one shot name per non-blank line.
-            function parseShotList(text) {
-                return text.split('\n').map(s => s.trim()).filter(Boolean);
+            // Builds a "shot list" field as individual rows (one input per shot) instead of a
+            // single free-text textarea — each shot is its own control you can add/remove, and
+            // Enter on a row adds the next one, like a real checklist rather than typed lines.
+            function buildShotListField(container, initialLabels) {
+                const wrapper = document.createElement('label');
+                wrapper.className = 'flex flex-col gap-1.5';
+
+                const labelEl = document.createElement('span');
+                labelEl.className = 'modal-label';
+                labelEl.textContent = 'Shot List';
+
+                const rows = document.createElement('div');
+                rows.className = 'flex flex-col gap-2 max-h-56 overflow-y-auto pr-1';
+
+                const addBtn = document.createElement('button');
+                addBtn.type = 'button';
+                addBtn.className = 'text-xs text-blue-400 hover:text-blue-300 self-start mt-1';
+                addBtn.textContent = '+ Add another shot';
+
+                const hint = document.createElement('span');
+                hint.className = 'text-[11px] text-gray-500';
+                hint.textContent = 'Each row becomes a shot (S010, S020, ...) — press Enter to add another.';
+
+                function addRow(value) {
+                    const row = document.createElement('div');
+                    row.className = 'flex items-center gap-2';
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.className = 'modal-input flex-1 shot-row-input';
+                    input.placeholder = 'Shot name (e.g. Living Room)';
+                    input.value = value || '';
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'text-gray-500 hover:text-red-400 w-6 h-6 flex items-center justify-center shrink-0';
+                    removeBtn.innerHTML = '<i class="fa-solid fa-xmark text-xs"></i>';
+                    removeBtn.addEventListener('click', () => row.remove());
+                    input.addEventListener('keydown', (e) => {
+                        if (e.key !== 'Enter') return;
+                        e.preventDefault();
+                        addRow('').querySelector('input').focus();
+                    });
+                    row.appendChild(input);
+                    row.appendChild(removeBtn);
+                    rows.appendChild(row);
+                    return row;
+                }
+                addBtn.addEventListener('click', () => addRow('').querySelector('input').focus());
+
+                (initialLabels.length ? initialLabels : ['']).forEach(addRow);
+
+                wrapper.appendChild(labelEl);
+                wrapper.appendChild(rows);
+                wrapper.appendChild(addBtn);
+                wrapper.appendChild(hint);
+                container.appendChild(wrapper);
+            }
+
+            function readShotListField(body) {
+                return Array.from(body.querySelectorAll('.shot-row-input')).map(i => i.value.trim()).filter(Boolean);
             }
 
             // App-level navigation between the three views. Exactly one is visible at a time.
@@ -875,29 +959,70 @@
                 showShareToast('Storage is not configured — add your Supabase project config in index.html', true, 6000);
             }
 
+            async function storageRemove(keys) {
+                if (!keys || keys.length === 0) return;
+                const { error } = await supabaseClient.storage.from(SUPABASE_BUCKET).remove(keys);
+                if (error) throw error;
+            }
+
             // --- Home view: projects -----------------------------------------------------------
             const projectGrid = document.getElementById('project-grid');
             const projectEmpty = document.getElementById('project-empty');
+            const projectSortSelect = document.getElementById('project-sort');
+            let projectSortMode = safeLocalGet('rmt_project_sort', 'recent');
+            projectSortSelect.value = projectSortMode;
 
             async function loadIndex() {
                 return (await storageGetJSON('_index.json')) || { projects: [] };
             }
 
+            // Bumps a project's updatedAt (used for the "Recent" sort) — called after any real
+            // edit (create/rename/add shots/save a version), not on a mere open/view.
+            async function touchProject(projectId) {
+                try {
+                    const index = await loadIndex();
+                    const p = index.projects.find(p => p.id === projectId);
+                    if (!p) return;
+                    p.updatedAt = new Date().toISOString();
+                    await storagePutJSON('_index.json', index);
+                } catch (err) {
+                    console.error('Touch project failed:', err);
+                }
+            }
+
+            function sortProjects(list) {
+                const arr = list.slice();
+                if (projectSortMode === 'name') arr.sort((a, b) => a.name.localeCompare(b.name));
+                else if (projectSortMode === 'created') arr.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                else arr.sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
+                return arr;
+            }
+
+            projectSortSelect.addEventListener('change', () => {
+                projectSortMode = projectSortSelect.value;
+                safeLocalSet('rmt_project_sort', projectSortMode);
+                renderHome();
+            });
+
             async function renderHome() {
                 projectGrid.innerHTML = '';
                 const index = await loadIndex();
                 projectEmpty.classList.toggle('hidden', index.projects.length > 0);
-                index.projects.slice().reverse().forEach(p => {
+                sortProjects(index.projects).forEach(p => {
                     const card = document.createElement('div');
                     card.className = 'project-card project-row';
                     card.innerHTML = `
                         <div class="text-blue-400"><i class="fa-solid fa-folder-open"></i></div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-semibold text-gray-100 truncate">${p.name}</div>
-                            <div class="text-[11px] text-gray-500">Created ${formatTimestamp(p.createdAt)}</div>
+                            <div class="text-sm font-semibold text-gray-100 truncate">${escapeHtml(p.name)}</div>
+                            <div class="text-[11px] text-gray-500">Updated ${formatTimestamp(p.updatedAt || p.createdAt)}</div>
                         </div>
+                        <button class="project-rename-btn toolbar-icon-btn" style="width:28px;height:28px;" data-tooltip="Rename"><i class="fa-solid fa-pen text-xs"></i></button>
+                        <button class="project-delete-btn toolbar-icon-btn danger" style="width:28px;height:28px;" data-tooltip="Delete"><i class="fa-solid fa-trash-can text-xs"></i></button>
                         <i class="fa-solid fa-chevron-right text-gray-600 text-xs"></i>`;
                     card.addEventListener('click', () => openProject(p.id, p.name));
+                    card.querySelector('.project-rename-btn').addEventListener('click', (e) => { e.stopPropagation(); openRenameProjectModal(p); });
+                    card.querySelector('.project-delete-btn').addEventListener('click', (e) => { e.stopPropagation(); openDeleteProjectModal(p); });
                     projectGrid.appendChild(card);
                 });
             }
@@ -912,7 +1037,7 @@
                     const index = await loadIndex();
                     const id = newId();
                     const createdAt = new Date().toISOString();
-                    index.projects.push({ id, name, createdAt });
+                    index.projects.push({ id, name, createdAt, updatedAt: createdAt });
                     await storagePutJSON('_index.json', index);
 
                     const boards = shotLabels.map((label, i) => ({ id: newId(), code: codeForIndex(i), label, createdAt }));
@@ -934,24 +1059,120 @@
                     title: 'New Project',
                     confirmText: 'Create Project',
                     focusSelector: '#modal-project-name',
-                    bodyHtml: `
-                        <label class="flex flex-col gap-1.5">
-                            <span class="modal-label">Project Name</span>
-                            <input id="modal-project-name" type="text" class="modal-input" placeholder="e.g. 123 Main St">
-                        </label>
-                        <label class="flex flex-col gap-1.5">
-                            <span class="modal-label">Shot List</span>
-                            <textarea id="modal-shot-list" rows="6" class="modal-input" style="resize:none;" placeholder="One shot per line, e.g.&#10;Living Room&#10;Kitchen&#10;Master Bedroom"></textarea>
-                            <span class="text-[11px] text-gray-500">Each line becomes a shot (S010, S020, ...). You can add more later.</span>
-                        </label>`,
+                    bodyBuilder: (body) => {
+                        const nameLabel = document.createElement('label');
+                        nameLabel.className = 'flex flex-col gap-1.5';
+                        nameLabel.innerHTML = `<span class="modal-label">Project Name</span>`;
+                        const nameInput = document.createElement('input');
+                        nameInput.type = 'text';
+                        nameInput.id = 'modal-project-name';
+                        nameInput.className = 'modal-input';
+                        nameInput.placeholder = 'e.g. 123 Main St';
+                        nameLabel.appendChild(nameInput);
+                        body.appendChild(nameLabel);
+                        buildShotListField(body, ['', '', '']);
+                    },
                     onConfirm: async (body) => {
                         const name = body.querySelector('#modal-project-name').value.trim();
                         if (!name) { showShareToast('Project name is required', true); return false; }
-                        const shotLabels = parseShotList(body.querySelector('#modal-shot-list').value);
+                        const shotLabels = readShotListField(body);
                         await createProject(name, shotLabels);
                     }
                 });
             });
+
+            function openRenameProjectModal(p) {
+                openModal({
+                    title: 'Rename Project',
+                    confirmText: 'Save',
+                    focusSelector: '#modal-project-name',
+                    bodyBuilder: (body) => {
+                        const label = document.createElement('label');
+                        label.className = 'flex flex-col gap-1.5';
+                        label.innerHTML = `<span class="modal-label">Project Name</span>`;
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.id = 'modal-project-name';
+                        input.className = 'modal-input';
+                        input.value = p.name;
+                        label.appendChild(input);
+                        body.appendChild(label);
+                    },
+                    onConfirm: async (body) => {
+                        const name = body.querySelector('#modal-project-name').value.trim();
+                        if (!name) { showShareToast('Project name is required', true); return false; }
+                        showShareToast('Saving…');
+                        try {
+                            const index = await loadIndex();
+                            const entry = index.projects.find(x => x.id === p.id);
+                            if (entry) { entry.name = name; entry.updatedAt = new Date().toISOString(); }
+                            await storagePutJSON('_index.json', index);
+                            const detail = await storageGetJSON(`_project-${p.id}.json`);
+                            if (detail) { detail.name = name; await storagePutJSON(`_project-${p.id}.json`, detail); }
+                            if (appState.projectId === p.id) appState.projectName = name;
+                            shareToast.classList.add('hidden');
+                            renderHome();
+                        } catch (err) {
+                            console.error('Rename project failed:', err);
+                            showShareToast('Rename failed — see console for details', true);
+                            return false;
+                        }
+                    }
+                });
+            }
+
+            async function deleteProjectCascade(id) {
+                const project = await storageGetJSON(`_project-${id}.json`);
+                if (project && project.boards) {
+                    for (const b of project.boards) {
+                        await deleteBoardFiles(b.id);
+                    }
+                }
+                await storageRemove([`_project-${id}.json`]);
+                const index = await loadIndex();
+                index.projects = index.projects.filter(p => p.id !== id);
+                await storagePutJSON('_index.json', index);
+            }
+
+            // Removes a board's own file plus every version/thumbnail it references — does NOT
+            // touch the owning project's `boards` list (callers update that themselves).
+            async function deleteBoardFiles(boardId) {
+                const board = await storageGetJSON(`_board-${boardId}.json`);
+                const keys = [`_board-${boardId}.json`];
+                if (board && board.versions) {
+                    board.versions.forEach(v => keys.push(`_version-${v.id}.json`, `_thumb-${v.id}.json`));
+                }
+                await storageRemove(keys);
+            }
+
+            function openDeleteProjectModal(p) {
+                openModal({
+                    title: 'Delete Project',
+                    confirmText: 'Delete',
+                    danger: true,
+                    bodyBuilder: (body) => {
+                        const p1 = document.createElement('p');
+                        p1.className = 'text-sm text-gray-300';
+                        const strong = document.createElement('span');
+                        strong.className = 'font-semibold text-white';
+                        strong.textContent = p.name;
+                        p1.append('Delete “', strong, '” and all of its shots? This can’t be undone.');
+                        body.appendChild(p1);
+                    },
+                    onConfirm: async () => {
+                        showShareToast('Deleting…');
+                        try {
+                            await deleteProjectCascade(p.id);
+                            shareToast.classList.add('hidden');
+                            renderHome();
+                        } catch (err) {
+                            console.error('Delete project failed:', err);
+                            showShareToast('Delete failed — see console for details', true);
+                            return false;
+                        }
+                    }
+                });
+            }
 
             document.getElementById('btn-project-back').addEventListener('click', () => { showView('home'); renderHome(); });
             document.getElementById('btn-editor-back').addEventListener('click', () => { showView('project'); renderProject(); });
@@ -980,12 +1201,18 @@
                 boardEmpty.classList.toggle('hidden', project.boards.length > 0);
                 project.boards.forEach(b => {
                     const card = document.createElement('div');
-                    card.className = 'board-card';
+                    card.className = 'board-card relative';
                     card.innerHTML = `
+                        <div class="absolute top-1.5 right-1.5 flex items-center gap-0.5">
+                            <button class="board-rename-btn toolbar-icon-btn" style="width:24px;height:24px;" data-tooltip="Rename"><i class="fa-solid fa-pen text-[10px]"></i></button>
+                            <button class="board-delete-btn toolbar-icon-btn danger" style="width:24px;height:24px;" data-tooltip="Delete"><i class="fa-solid fa-trash-can text-[10px]"></i></button>
+                        </div>
                         <div class="flex items-center gap-2 text-blue-400"><i class="fa-solid fa-image"></i></div>
-                        <div class="text-sm font-semibold text-gray-100 truncate">${b.code}</div>
-                        <div class="text-xs text-gray-400 truncate">${b.label || ''}</div>`;
+                        <div class="text-sm font-semibold text-gray-100 truncate">${escapeHtml(b.code)}</div>
+                        <div class="text-xs text-gray-400 truncate">${escapeHtml(b.label || '')}</div>`;
                     card.addEventListener('click', () => openBoard(b));
+                    card.querySelector('.board-rename-btn').addEventListener('click', (e) => { e.stopPropagation(); openRenameShotModal(b); });
+                    card.querySelector('.board-delete-btn').addEventListener('click', (e) => { e.stopPropagation(); openDeleteShotModal(b); });
                     boardGrid.appendChild(card);
                 });
             }
@@ -994,14 +1221,10 @@
                 openModal({
                     title: 'Add Shots',
                     confirmText: 'Add',
-                    focusSelector: '#modal-shot-list',
-                    bodyHtml: `
-                        <label class="flex flex-col gap-1.5">
-                            <span class="modal-label">Shot List</span>
-                            <textarea id="modal-shot-list" rows="6" class="modal-input" style="resize:none;" placeholder="One shot per line"></textarea>
-                        </label>`,
+                    focusSelector: '.shot-row-input',
+                    bodyBuilder: (body) => buildShotListField(body, ['']),
                     onConfirm: async (body) => {
-                        const shotLabels = parseShotList(body.querySelector('#modal-shot-list').value);
+                        const shotLabels = readShotListField(body);
                         if (shotLabels.length === 0) { showShareToast('Enter at least one shot name', true); return false; }
                         showShareToast('Adding shots…');
                         try {
@@ -1019,6 +1242,7 @@
                             await Promise.all(newBoards.map(b =>
                                 storagePutJSON(`_board-${b.id}.json`, { id: b.id, projectId: appState.projectId, code: b.code, label: b.label, createdAt, versions: [] })
                             ));
+                            await touchProject(appState.projectId);
                             shareToast.classList.add('hidden');
                             renderProject();
                         } catch (err) {
@@ -1029,6 +1253,78 @@
                     }
                 });
             });
+
+            function openRenameShotModal(b) {
+                openModal({
+                    title: `Rename ${b.code}`,
+                    confirmText: 'Save',
+                    focusSelector: '#modal-shot-name',
+                    bodyBuilder: (body) => {
+                        const label = document.createElement('label');
+                        label.className = 'flex flex-col gap-1.5';
+                        label.innerHTML = `<span class="modal-label">Shot Name</span>`;
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.id = 'modal-shot-name';
+                        input.className = 'modal-input';
+                        input.value = b.label || '';
+                        label.appendChild(input);
+                        body.appendChild(label);
+                    },
+                    onConfirm: async (body) => {
+                        const label = body.querySelector('#modal-shot-name').value.trim();
+                        showShareToast('Saving…');
+                        try {
+                            const project = await loadProject();
+                            const entry = project.boards.find(x => x.id === b.id);
+                            if (entry) entry.label = label;
+                            await storagePutJSON(`_project-${appState.projectId}.json`, project);
+                            const board = await storageGetJSON(`_board-${b.id}.json`);
+                            if (board) { board.label = label; await storagePutJSON(`_board-${b.id}.json`, board); }
+                            await touchProject(appState.projectId);
+                            shareToast.classList.add('hidden');
+                            renderProject();
+                        } catch (err) {
+                            console.error('Rename shot failed:', err);
+                            showShareToast('Rename failed — see console for details', true);
+                            return false;
+                        }
+                    }
+                });
+            }
+
+            function openDeleteShotModal(b) {
+                openModal({
+                    title: 'Delete Shot',
+                    confirmText: 'Delete',
+                    danger: true,
+                    bodyBuilder: (body) => {
+                        const p1 = document.createElement('p');
+                        p1.className = 'text-sm text-gray-300';
+                        const strong = document.createElement('span');
+                        strong.className = 'font-semibold text-white';
+                        strong.textContent = b.label ? `${b.code} — ${b.label}` : b.code;
+                        p1.append('Delete “', strong, '” and all of its saved versions? This can’t be undone.');
+                        body.appendChild(p1);
+                    },
+                    onConfirm: async () => {
+                        showShareToast('Deleting…');
+                        try {
+                            await deleteBoardFiles(b.id);
+                            const project = await loadProject();
+                            project.boards = project.boards.filter(x => x.id !== b.id);
+                            await storagePutJSON(`_project-${appState.projectId}.json`, project);
+                            await touchProject(appState.projectId);
+                            shareToast.classList.add('hidden');
+                            renderProject();
+                        } catch (err) {
+                            console.error('Delete shot failed:', err);
+                            showShareToast('Delete failed — see console for details', true);
+                            return false;
+                        }
+                    }
+                });
+            }
 
             function openBoard(b) {
                 appState.boardId = b.id;
@@ -1106,6 +1402,7 @@
                     board.versions.push({ id, savedAt });
                     await storagePutJSON(`_board-${appState.boardId}.json`, board);
                     currentBoardData = board;
+                    if (appState.projectId) touchProject(appState.projectId);
 
                     appState.versionId = id;
                     currentState = JSON.stringify(canvasJson);
