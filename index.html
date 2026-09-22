@@ -325,19 +325,6 @@
                 <input type="color" id="colorPicker" value="#ef4444" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
             </div>
 
-            <div id="calloutColorDivider" class="hidden toolbar-divider"></div>
-
-            <div id="calloutColorGroup" class="hidden contents">
-                <div class="flex items-center gap-1.5 px-1" data-tooltip="Callout Background Color">
-                    <span class="toolbar-label">BG</span>
-                    <input type="color" id="calloutBgColor" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
-                </div>
-                <div class="flex items-center gap-1.5 px-1" data-tooltip="Callout Font Color">
-                    <span class="toolbar-label">Font</span>
-                    <input type="color" id="calloutFontColor" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
-                </div>
-            </div>
-
             <div class="toolbar-divider"></div>
 
             <div class="flex items-center gap-1.5 px-1" data-tooltip="Line Thickness">
@@ -474,6 +461,23 @@
 
         <div id="share-toast" class="hidden absolute z-50 top-4 left-1/2 -translate-x-1/2 max-w-md text-center bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl px-4 py-2 text-sm text-gray-100 font-medium pointer-events-none"></div>
 
+        <!-- For text/callout selections, colorPicker's own click is intercepted (see
+             isTextLikeContext) and this popover opens instead, letting one swatch edit both
+             text color and background rather than adding separate toolbar slots. Positioned
+             with fixed + JS-computed top/left (see openTextColorPopover) instead of being
+             nested in the toolbar, whose horizontal-scroll strip clips anything hanging below it. -->
+        <div id="textColorPopover" class="hidden fixed flex flex-col bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl p-2.5 gap-2 z-50 whitespace-nowrap">
+            <div class="flex items-center gap-2">
+                <span class="toolbar-label w-16">Text</span>
+                <input type="color" id="textColorInput" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="toolbar-label w-16">Background</span>
+                <input type="color" id="textBgColorInput" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
+                <button id="btn-clear-text-bg" class="text-[11px] text-gray-400 hover:text-white transition-colors ml-1">None</button>
+            </div>
+        </div>
+
         <div id="pdf-page-modal" class="hidden fixed inset-0 z-[100] items-center justify-center bg-black/60 backdrop-blur-sm">
             <div class="bg-gray-950 border border-gray-700 rounded-lg shadow-2xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col">
                 <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
@@ -573,6 +577,7 @@
             let currentFont = 'sans-serif';
             let currentFontSize = 20;
             let currentOpacity = 0.5;
+            let currentTextBgColor = ''; // '' = no background fill on a newly-placed text box
             
             // History State (Undo)
             let history = [];
@@ -1582,22 +1587,42 @@
             });
 
 
+            // True when the swatch click should open the Text/Background popover instead of
+            // the browser's native color dialog: either a text-like object is selected
+            // (a callout, or a plain Textbox/IText), or nothing's selected but the next thing
+            // placed will be one (Text/Callout tool armed) — so the popover also pre-sets the
+            // colors a freshly-created text box or callout will start with.
+            function textLikeSelection() {
+                const obj = canvas.getActiveObject();
+                if (obj && (obj.calloutId || obj.type === 'i-text' || obj.type === 'textbox')) return obj;
+                return null;
+            }
+            function isTextLikeContext() {
+                return !!textLikeSelection() || (!canvas.getActiveObject() && (currentMode === 'text' || currentMode === 'callout'));
+            }
+
+            document.getElementById('colorPicker').addEventListener('click', (e) => {
+                if (isTextLikeContext()) {
+                    e.preventDefault();
+                    updateTextColorPopoverValues();
+                    const rect = e.target.getBoundingClientRect();
+                    textColorPopover.style.top = `${rect.bottom + 6}px`;
+                    textColorPopover.style.left = `${rect.left}px`;
+                    textColorPopover.classList.remove('hidden');
+                }
+            });
+
             document.getElementById('colorPicker').addEventListener('input', (e) => {
                 currentColor = e.target.value;
                 canvas.freeDrawingBrush.color = currentColor;
-                
-                // Update selected object(s) color
+
+                // Update selected object(s) color — text-like objects are excluded since their
+                // color now comes exclusively from the Text/Background popover above.
                 const activeObjects = canvas.getActiveObjects();
                 if (activeObjects.length) {
                     activeObjects.forEach(obj => {
-                        if (obj.calloutId) {
-                            // A callout's box/frame/leg/head all carry calloutId — the shared
-                            // swatch only drives the leader/arrowhead/border now that background
-                            // and font color have their own independent pickers (see
-                            // calloutBgColor/calloutFontColor below), so skip the generic
-                            // fill/stroke branches entirely and let syncCalloutColor handle it.
-                        } else if (obj.type === 'i-text' || obj.type === 'textbox') {
-                            obj.set('fill', currentColor);
+                        if (obj.calloutId || obj.type === 'i-text' || obj.type === 'textbox') {
+                            // handled by the popover instead
                         } else if (obj.type === 'group') {
                             // Arrows are a Line+Triangle group — recolor the parts, not the group itself
                             obj.getObjects().forEach(subObj => {
@@ -1610,26 +1635,83 @@
                         } else {
                             obj.set('stroke', currentColor);
                         }
-                        // Keep a callout's leader/arrowhead/border matching this swatch
-                        if (obj.calloutId) syncCalloutColor(obj.calloutId, currentColor);
                     });
                     canvas.renderAll();
                 }
             });
 
-            // Background/font color only apply to whichever single callout is currently
-            // selected (any of its box/frame/leg/head parts all carry the same calloutId) —
-            // shown/hidden and populated by updateCalloutColorControls(), hooked to selection
-            // events further down.
-            document.getElementById('calloutBgColor').addEventListener('input', (e) => {
-                const obj = canvas.getActiveObject();
-                if (obj && obj.calloutId) syncCalloutBgColor(obj.calloutId, e.target.value);
+            // Text/Background popover — replaces the old separate BG/Font toolbar swatches.
+            // Works for a plain Textbox exactly the same way it works for a callout, so the
+            // same two fields cover both instead of the callout tool needing its own controls.
+            const textColorPopover = document.getElementById('textColorPopover');
+            const textColorInput = document.getElementById('textColorInput');
+            const textBgColorInput = document.getElementById('textBgColorInput');
+
+            function updateTextColorPopoverValues() {
+                const obj = textLikeSelection();
+                if (obj && obj.calloutId) {
+                    const entry = calloutRegistry[obj.calloutId];
+                    if (entry) {
+                        if (entry.box && typeof entry.box.fill === 'string' && /^#/.test(entry.box.fill)) {
+                            textColorInput.value = entry.box.fill;
+                        }
+                        textBgColorInput.value = rgbToHex(calloutFrameRgb(entry));
+                    }
+                } else if (obj) {
+                    // Plain Textbox/IText
+                    if (typeof obj.fill === 'string' && /^#/.test(obj.fill)) textColorInput.value = obj.fill;
+                    textBgColorInput.value = (obj.backgroundColor && /^#/.test(obj.backgroundColor)) ? obj.backgroundColor : '#ffffff';
+                } else {
+                    // Nothing selected yet — popover is pre-setting defaults for the next
+                    // text/callout that gets placed.
+                    textColorInput.value = currentColor;
+                    textBgColorInput.value = currentTextBgColor || '#ffffff';
+                }
+            }
+
+            textColorInput.addEventListener('input', (e) => {
+                const hex = e.target.value;
+                const obj = textLikeSelection();
+                if (obj && obj.calloutId) {
+                    syncCalloutFontColor(obj.calloutId, hex);
+                } else if (obj) {
+                    obj.set('fill', hex);
+                } else {
+                    currentColor = hex; // pre-set for the next text box placed
+                }
                 canvas.renderAll();
             });
-            document.getElementById('calloutFontColor').addEventListener('input', (e) => {
-                const obj = canvas.getActiveObject();
-                if (obj && obj.calloutId) syncCalloutFontColor(obj.calloutId, e.target.value);
+
+            textBgColorInput.addEventListener('input', (e) => {
+                const hex = e.target.value;
+                const obj = textLikeSelection();
+                if (obj && obj.calloutId) {
+                    syncCalloutBgColor(obj.calloutId, hex);
+                } else if (obj) {
+                    obj.set('backgroundColor', hex);
+                } else {
+                    currentTextBgColor = hex; // pre-set for the next text box placed
+                }
                 canvas.renderAll();
+            });
+
+            document.getElementById('btn-clear-text-bg').addEventListener('click', () => {
+                const obj = textLikeSelection();
+                if (obj && !obj.calloutId) {
+                    // Callouts always need their card background — only a plain text box's
+                    // background can be cleared back to fully transparent.
+                    obj.set('backgroundColor', '');
+                } else if (!obj) {
+                    currentTextBgColor = '';
+                }
+                canvas.renderAll();
+            });
+
+            document.addEventListener('mousedown', (e) => {
+                if (!textColorPopover.classList.contains('hidden') &&
+                    !textColorPopover.contains(e.target) && e.target.id !== 'colorPicker') {
+                    textColorPopover.classList.add('hidden');
+                }
             });
 
             const lineWidthSlider = document.getElementById('lineWidth');
@@ -1841,33 +1923,11 @@
                     opacityNumber.value = currentOpacity;
                 }
 
-                updateCalloutColorControls(obj);
-            }
-
-            const calloutColorGroup = document.getElementById('calloutColorGroup');
-            const calloutColorDivider = document.getElementById('calloutColorDivider');
-            const calloutBgColorInput = document.getElementById('calloutBgColor');
-            const calloutFontColorInput = document.getElementById('calloutFontColor');
-
-            // Shows the Background/Font swatches only while a single callout part is selected,
-            // populated from its current colors — the mirror of applyOpacity/colorPicker/etc,
-            // which push the toolbar's values ONTO the selection instead.
-            function updateCalloutColorControls(obj) {
-                const entry = obj && obj.calloutId ? calloutRegistry[obj.calloutId] : null;
-                const show = !!entry;
-                calloutColorGroup.classList.toggle('hidden', !show);
-                calloutColorDivider.classList.toggle('hidden', !show);
-                if (!show) return;
-
-                calloutBgColorInput.value = rgbToHex(calloutFrameRgb(entry));
-                if (entry.box && typeof entry.box.fill === 'string' && /^#/.test(entry.box.fill)) {
-                    calloutFontColorInput.value = entry.box.fill;
-                }
             }
 
             canvas.on('selection:created', syncToolbarFromSelection);
             canvas.on('selection:updated', syncToolbarFromSelection);
-            canvas.on('selection:cleared', () => updateCalloutColorControls(null));
+            canvas.on('selection:cleared', () => textColorPopover.classList.add('hidden'));
 
             // Setup initial brush
             canvas.freeDrawingBrush.color = currentColor;
@@ -2086,6 +2146,10 @@
             // --- PDF import: pick pages, flatten each selected page to a PNG, then drop it
             // onto the canvas through the same addImageToCanvas() path as any other image. ---
 
+            // Width (in px) each PDF page is flattened to before it's dropped on the canvas.
+            // Higher = crisper when zoomed in, at the cost of a bigger canvas object/PNG.
+            const PDF_FLATTEN_TARGET_WIDTH = 3000;
+
             const pdfPageModal = document.getElementById('pdf-page-modal');
             const pdfPageGrid = document.getElementById('pdf-page-grid');
             const pdfModalFilename = document.getElementById('pdf-modal-filename');
@@ -2181,6 +2245,7 @@
                         <div class="aspect-[3/4] flex items-center justify-center bg-gray-800">
                             <i class="fa-solid fa-spinner fa-spin text-gray-600"></i>
                         </div>
+                        <div class="absolute top-1.5 left-1.5 min-w-[20px] h-5 px-1.5 rounded-full bg-gray-950/90 border border-white/20 flex items-center justify-center text-[10px] font-semibold text-gray-200 pointer-events-none">${pageNum}</div>
                         <div class="pdf-check-badge hidden absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-blue-600 border border-white/30 items-center justify-center">
                             <i class="fa-solid fa-check text-[10px] text-white"></i>
                         </div>
@@ -2262,9 +2327,8 @@
                     const pageNum = pages[i];
                     try {
                         const page = await pdfDoc.getPage(pageNum);
-                        const dataUrl = await renderPdfPageToDataUrl(page, 1800);
-                        const baseName = file.name.replace(/\.pdf$/i, '');
-                        const pageLabel = pdfDoc.numPages > 1 ? `${baseName} (p${pageNum})` : baseName;
+                        const dataUrl = await renderPdfPageToDataUrl(page, PDF_FLATTEN_TARGET_WIDTH);
+                        const pageLabel = pdfDoc.numPages > 1 ? `${file.name} — Page ${pageNum}` : file.name;
 
                         if (useGrid) {
                             const row = Math.floor(i / gridCols);
@@ -2633,6 +2697,7 @@
                     const text = new fabric.Textbox('Type here...', {
                         left: pointer.x, top: pointer.y, originX: 'center', originY: 'center',
                         width: 200, fontFamily: currentFont, fill: currentColor, fontSize: currentFontSize,
+                        backgroundColor: currentTextBgColor,
                         cornerColor: '#3b82f6', borderColor: '#3b82f6', transparentCorners: false
                     });
                     canvas.add(text);
