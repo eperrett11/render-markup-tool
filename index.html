@@ -266,34 +266,61 @@
             height: 100%;
             width: 100%;
         }
+        /* Home + project pages deliberately skip the board's grid pattern, so they read as
+           app pages rather than another canvas. */
         #view-home, #view-project {
             position: fixed;
             inset: 0;
             z-index: 15;
-            background: #000;
+            background:
+                radial-gradient(1200px 600px at 50% -10%, rgba(37, 99, 235, 0.14), transparent 60%),
+                #05070c;
         }
 
-        .project-card, .board-card {
-            background: rgba(17, 24, 39, 0.7);
-            border: 1px solid #374151;
-            border-radius: 12px;
-            padding: 16px;
-            cursor: pointer;
-            transition: border-color 120ms ease-out, transform 120ms ease-out;
+        .eyebrow {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: #60a5fa;
+        }
+
+        /* One row in the project list or a project's shot list: thumbnail + text + actions */
+        .list-card {
             display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        .project-card:hover, .board-card:hover {
-            border-color: #3b82f6;
-            transform: translateY(-2px);
-        }
-        /* Home page's project list: a centered, scrollable column of full-width rows
-           instead of the boards grid's square cards. */
-        .project-card.project-row {
-            flex-direction: row;
             align-items: center;
+            gap: 16px;
+            padding: 12px;
+            background: rgba(17, 24, 39, 0.6);
+            border: 1px solid #1f2937;
+            border-radius: 14px;
+            cursor: pointer;
+            transition: border-color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out;
+        }
+        .list-card:hover {
+            border-color: #3b82f6;
+            background: rgba(17, 24, 39, 0.9);
+            transform: translateY(-1px);
+        }
+
+        .thumb-box {
+            aspect-ratio: 16 / 9;
+            flex-shrink: 0;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #0b0f19;
+            border: 1px solid #1f2937;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #374151;
+            font-size: 18px;
+        }
+        .thumb-box img {
             width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
         }
 
         .modal-input {
@@ -347,7 +374,6 @@
             transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
         }
         .flow-btn:hover { color: #fff; border-color: #3b82f6; }
-        .flow-btn.is-final { color: #93c5fd; border-color: #3b82f6; background: rgba(37, 99, 235, 0.18); }
         .history-item.current { color: #60a5fa; }
     </style>
 </head>
@@ -355,41 +381,45 @@
 
     <!-- Home: pick a project, or create a new one -->
     <div id="view-home">
-        <div class="grid-background" style="position:fixed;"></div>
-        <header class="h-16 bg-gray-950/95 backdrop-blur-sm border-b border-gray-800 flex items-center justify-between px-6 z-20 shadow-xl shrink-0">
-            <h1 class="text-sm font-semibold text-gray-100 tracking-wide">Projects</h1>
-            <div class="flex items-center gap-2">
-                <select id="project-sort" class="bg-gray-800 text-xs text-gray-300 border border-gray-700 rounded px-2 py-1.5 outline-none cursor-pointer" data-tooltip="Sort projects">
-                    <option value="recent">Recent</option>
-                    <option value="name">Name (A–Z)</option>
-                    <option value="created">Date Created</option>
-                </select>
-                <button id="btn-new-project" class="toolbar-btn toolbar-btn-primary">
-                    <i class="fa-solid fa-plus"></i><span>New Project</span>
-                </button>
+        <div class="flex-1 overflow-y-auto">
+            <div class="max-w-2xl mx-auto px-4 sm:px-6 pt-16 pb-20 flex flex-col items-center text-center">
+                <div class="eyebrow">Render Markup</div>
+                <h1 class="text-3xl font-semibold text-white mt-2 tracking-tight">Projects</h1>
+                <p class="text-sm text-gray-500 mt-2">Open a project to review its shots, or start a new one.</p>
+                <div class="flex items-center gap-2 mt-6">
+                    <select id="project-sort" class="bg-gray-900 text-xs text-gray-300 border border-gray-700 rounded-md px-2.5 py-2 outline-none cursor-pointer" aria-label="Sort projects">
+                        <option value="recent">Recent</option>
+                        <option value="name">Name (A–Z)</option>
+                        <option value="created">Date Created</option>
+                    </select>
+                    <button id="btn-new-project" class="toolbar-btn toolbar-btn-primary">
+                        <i class="fa-solid fa-plus"></i><span>New Project</span>
+                    </button>
+                </div>
+                <div id="project-grid" class="w-full flex flex-col gap-3 mt-10 text-left"></div>
+                <div id="project-empty" class="hidden text-gray-500 text-sm mt-10">No projects yet — click "New Project" to get started.</div>
             </div>
-        </header>
-        <div class="relative z-10 flex-1 overflow-y-auto p-8">
-            <div id="project-grid" class="flex flex-col gap-3 max-w-md mx-auto"></div>
-            <div id="project-empty" class="hidden text-gray-500 text-sm mt-10 text-center">No projects yet — click "New Project" to get started.</div>
         </div>
     </div>
 
-    <!-- Project: pick a shot (board), or add more to the shot list -->
+    <!-- Project: its shots, one per row, top to bottom -->
     <div id="view-project">
-        <div class="grid-background" style="position:fixed;"></div>
-        <header class="h-16 bg-gray-950/95 backdrop-blur-sm border-b border-gray-800 flex items-center justify-between px-6 z-20 shadow-xl shrink-0">
-            <div class="flex items-center gap-3 min-w-0">
-                <button id="btn-project-back" class="toolbar-icon-btn" data-tooltip="Back to projects"><i class="fa-solid fa-arrow-left"></i></button>
-                <h1 id="project-title" class="text-sm font-semibold text-gray-100 truncate">Project</h1>
+        <div class="flex-1 overflow-y-auto">
+            <div class="max-w-3xl mx-auto px-4 sm:px-6 pt-8 pb-20">
+                <button id="btn-project-back" class="flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-white transition-colors">
+                    <i class="fa-solid fa-arrow-left"></i><span>All projects</span>
+                </button>
+                <div class="flex flex-col items-center text-center mt-8">
+                    <div class="eyebrow">Project</div>
+                    <h1 id="project-title" class="text-3xl font-semibold text-white mt-2 tracking-tight break-words max-w-full">Project</h1>
+                    <p id="project-meta" class="text-sm text-gray-500 mt-2"></p>
+                    <button id="btn-new-board" class="toolbar-btn toolbar-btn-primary mt-6">
+                        <i class="fa-solid fa-plus"></i><span>Add Shots</span>
+                    </button>
+                </div>
+                <div id="board-grid" class="flex flex-col gap-3 mt-10"></div>
+                <div id="board-empty" class="hidden text-gray-500 text-sm mt-10 text-center">No shots yet — click "Add Shots" to get started.</div>
             </div>
-            <button id="btn-new-board" class="toolbar-btn toolbar-btn-primary">
-                <i class="fa-solid fa-plus"></i><span>Add Shots</span>
-            </button>
-        </header>
-        <div class="relative z-10 flex-1 overflow-y-auto p-8">
-            <div id="board-grid" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));"></div>
-            <div id="board-empty" class="hidden text-gray-500 text-sm mt-10 text-center">No shots yet — click "Add Shots" to get started.</div>
         </div>
     </div>
 
@@ -755,9 +785,8 @@
             let isUndoing = false;
 
             // Custom tags that must survive toJSON/loadFromJSON: callout tags so undo can relink
-            // parts and keep the tip anchor correct, and finalCopyOfRound so re-marking a WIP
-            // version as final can find (and replace) the previous delivered copy.
-            const SERIALIZE_PROPS = ['calloutId', 'calloutRole', 'tipX', 'tipY', 'finalCopyOfRound'];
+            // parts and keep the tip anchor correct, and the image's original file name.
+            const SERIALIZE_PROPS = ['calloutId', 'calloutRole', 'tipX', 'tipY', 'sourceFileName'];
 
             function serializeCanvas() {
                 return canvas.toJSON(SERIALIZE_PROPS);
@@ -1036,27 +1065,82 @@
                 renderHome();
             });
 
+            // --- Thumbnails for the project / shot lists ---------------------------------------
+            // Each save writes a small preview to _thumb-<versionId>.json and records that id on
+            // the shot's entry (and the project's) as thumbId. Shots saved before that existed
+            // fall back to their latest version's thumb.
+            const thumbCache = new Map(); // versionId -> Promise<dataURL|null>
+
+            function loadThumb(versionId) {
+                if (!versionId) return Promise.resolve(null);
+                if (!thumbCache.has(versionId)) {
+                    thumbCache.set(versionId, storageGetJSON(`_thumb-${versionId}.json`)
+                        .then(d => (d && d.thumb) || null)
+                        .catch(() => null));
+                }
+                return thumbCache.get(versionId);
+            }
+
+            async function boardThumbId(b) {
+                if (b.thumbId) return b.thumbId;
+                const board = await storageGetJSON(`_board-${b.id}.json`).catch(() => null);
+                const last = board && board.versions && board.versions[board.versions.length - 1];
+                return last ? last.id : null;
+            }
+
+            function setThumb(box, dataUrl) {
+                if (!box || !dataUrl) return;
+                const img = document.createElement('img');
+                img.alt = '';
+                img.src = dataUrl;
+                box.innerHTML = '';
+                box.appendChild(img);
+            }
+
+            function actionButtonsHtml(renameClass, deleteClass) {
+                return `
+                    <button class="${renameClass} toolbar-icon-btn" style="width:30px;height:30px;" aria-label="Rename"><i class="fa-solid fa-pen text-xs"></i></button>
+                    <button class="${deleteClass} toolbar-icon-btn danger" style="width:30px;height:30px;" aria-label="Delete"><i class="fa-solid fa-trash-can text-xs"></i></button>`;
+            }
+
             async function renderHome() {
-                projectGrid.innerHTML = '';
                 const index = await loadIndex();
+                projectGrid.innerHTML = '';
                 projectEmpty.classList.toggle('hidden', index.projects.length > 0);
                 sortProjects(index.projects).forEach(p => {
                     const card = document.createElement('div');
-                    card.className = 'project-card project-row';
+                    card.className = 'list-card';
                     card.innerHTML = `
-                        <div class="text-blue-400"><i class="fa-solid fa-folder-open"></i></div>
+                        <div class="thumb-box" style="width:min(144px, 34%);"><i class="fa-regular fa-folder-open"></i></div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-semibold text-gray-100 truncate">${escapeHtml(p.name)}</div>
-                            <div class="text-[11px] text-gray-500">Updated ${formatTimestamp(p.updatedAt || p.createdAt)}</div>
+                            <div class="text-[15px] font-semibold text-gray-100 truncate">${escapeHtml(p.name)}</div>
+                            <div class="text-xs text-gray-500 mt-1"><span class="project-shot-count"></span>Updated ${formatTimestamp(p.updatedAt || p.createdAt)}</div>
                         </div>
-                        <button class="project-rename-btn toolbar-icon-btn" style="width:28px;height:28px;" data-tooltip="Rename"><i class="fa-solid fa-pen text-xs"></i></button>
-                        <button class="project-delete-btn toolbar-icon-btn danger" style="width:28px;height:28px;" data-tooltip="Delete"><i class="fa-solid fa-trash-can text-xs"></i></button>
-                        <i class="fa-solid fa-chevron-right text-gray-600 text-xs"></i>`;
+                        ${actionButtonsHtml('project-rename-btn', 'project-delete-btn')}
+                        <i class="fa-solid fa-chevron-right text-gray-600 text-xs pr-1"></i>`;
                     card.addEventListener('click', () => openProject(p.id, p.name));
                     card.querySelector('.project-rename-btn').addEventListener('click', (e) => { e.stopPropagation(); openRenameProjectModal(p); });
                     card.querySelector('.project-delete-btn').addEventListener('click', (e) => { e.stopPropagation(); openDeleteProjectModal(p); });
                     projectGrid.appendChild(card);
+                    fillProjectCard(card, p);
                 });
+            }
+
+            async function fillProjectCard(card, p) {
+                const detail = await storageGetJSON(`_project-${p.id}.json`).catch(() => null);
+                const boards = (detail && detail.boards) || [];
+                card.querySelector('.project-shot-count').textContent = `${boards.length} shot${boards.length === 1 ? '' : 's'} · `;
+
+                let thumbId = p.thumbId;
+                if (!thumbId) {
+                    const newest = boards.filter(b => b.thumbId)
+                        .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))[0];
+                    thumbId = newest ? newest.thumbId : null;
+                }
+                for (let i = 0; !thumbId && i < Math.min(boards.length, 6); i++) {
+                    thumbId = await boardThumbId(boards[i]);
+                }
+                setThumb(card.querySelector('.thumb-box'), await loadThumb(thumbId));
             }
 
             function codeForIndex(i) {
@@ -1220,6 +1304,7 @@
             const boardGrid = document.getElementById('board-grid');
             const boardEmpty = document.getElementById('board-empty');
             const projectTitle = document.getElementById('project-title');
+            const projectMeta = document.getElementById('project-meta');
 
             async function loadProject() {
                 return await storageGetJSON(`_project-${appState.projectId}.json`);
@@ -1227,25 +1312,28 @@
 
             async function renderProject() {
                 projectTitle.textContent = appState.projectName;
-                boardGrid.innerHTML = '';
                 const project = await loadProject();
+                boardGrid.innerHTML = '';
                 if (!project) return;
-                boardEmpty.classList.toggle('hidden', project.boards.length > 0);
+                const n = project.boards.length;
+                projectMeta.textContent = `${n} shot${n === 1 ? '' : 's'}`;
+                boardEmpty.classList.toggle('hidden', n > 0);
                 project.boards.forEach(b => {
                     const card = document.createElement('div');
-                    card.className = 'board-card relative';
+                    card.className = 'list-card';
                     card.innerHTML = `
-                        <div class="absolute top-1.5 right-1.5 flex items-center gap-0.5">
-                            <button class="board-rename-btn toolbar-icon-btn" style="width:24px;height:24px;" data-tooltip="Rename"><i class="fa-solid fa-pen text-[10px]"></i></button>
-                            <button class="board-delete-btn toolbar-icon-btn danger" style="width:24px;height:24px;" data-tooltip="Delete"><i class="fa-solid fa-trash-can text-[10px]"></i></button>
+                        <div class="thumb-box" style="width:min(300px, 45%);"><i class="fa-regular fa-image"></i></div>
+                        <div class="flex-1 min-w-0 self-start pt-1">
+                            <div class="eyebrow">${escapeHtml(b.code)}</div>
+                            <div class="text-lg font-semibold text-gray-100 truncate mt-1">${escapeHtml(b.label || 'Untitled shot')}</div>
+                            <div class="text-xs text-gray-500 mt-1">${b.updatedAt ? 'Updated ' + formatTimestamp(b.updatedAt) : 'Not saved yet'}</div>
                         </div>
-                        <div class="flex items-center gap-2 text-blue-400"><i class="fa-solid fa-image"></i></div>
-                        <div class="text-sm font-semibold text-gray-100 truncate">${escapeHtml(b.code)}</div>
-                        <div class="text-xs text-gray-400 truncate">${escapeHtml(b.label || '')}</div>`;
+                        <div class="flex items-center gap-1 self-start">${actionButtonsHtml('board-rename-btn', 'board-delete-btn')}</div>`;
                     card.addEventListener('click', () => openBoard(b));
                     card.querySelector('.board-rename-btn').addEventListener('click', (e) => { e.stopPropagation(); openRenameShotModal(b); });
                     card.querySelector('.board-delete-btn').addEventListener('click', (e) => { e.stopPropagation(); openDeleteShotModal(b); });
                     boardGrid.appendChild(card);
+                    boardThumbId(b).then(loadThumb).then(url => setThumb(card.querySelector('.thumb-box'), url));
                 });
             }
 
@@ -1425,18 +1513,18 @@
                 showShareToast('Saving…');
                 try {
                     const canvasJson = serializeCanvas();
-                    const thumb = canvas.toDataURL({ format: 'png', multiplier: Math.min(1, 480 / canvas.getWidth()) });
+                    const thumb = makeThumbDataUrl();
                     const id = newId();
                     const savedAt = new Date().toISOString();
 
                     await storagePutJSON(`_version-${id}.json`, { canvasJson, savedAt });
-                    await storagePutJSON(`_thumb-${id}.json`, { thumb, savedAt });
+                    if (thumb) await storagePutJSON(`_thumb-${id}.json`, { thumb, savedAt });
 
                     const board = await loadBoard();
                     board.versions.push({ id, savedAt });
                     await storagePutJSON(`_board-${appState.boardId}.json`, board);
                     currentBoardData = board;
-                    if (appState.projectId) touchProject(appState.projectId);
+                    await updateShotMeta(appState.boardId, thumb ? id : null, savedAt);
 
                     appState.versionId = id;
                     currentState = JSON.stringify(canvasJson);
@@ -4826,12 +4914,13 @@
             });
 
             // --- Stage flow: Whitecard -> WIP -> delivered -> client comments, per round -----
-            // Each stage is a locked frame on the canvas (not selectable — you drop renders and
-            // draw on top of it). Rows run top to bottom, one per stage; WIP versions and client
-            // comments extend to the right of their row. Positions are derived from each frame's
-            // (frameKind, round, version) relative to the whitecard frame, and frames live in the
-            // canvas JSON like everything else, so undo/save/load need no special handling.
-            const FRAME_W = 1600, FRAME_H = 900, COL_GAP = 160, ROW_GAP = 280;
+            // Each stage is a frame on the canvas. Frames aren't selectable (clicks go through to
+            // whatever tool is active); each one has a Move handle in the overlay instead, which
+            // drags the frame together with everything sitting inside it. New versions go to the
+            // right of the last version in their row; a new round goes below the lowest frame.
+            // Frames live in the canvas JSON like everything else, so undo/save/load just work.
+            const FRAME_W = 1600, FRAME_H = 900, COL_GAP = 600, ROW_GAP = 700;
+            const COMMENTS_W = FRAME_W * 2 + COL_GAP;
             const FRAME_STYLE = {
                 whitecard: { stroke: '#9ca3af', fill: 'rgba(255,255,255,0.035)' },
                 wip:       { stroke: '#6b7280', fill: 'rgba(255,255,255,0.03)' },
@@ -4863,7 +4952,6 @@
                     this.frameKind = options.frameKind;
                     this.round = options.round !== undefined ? options.round : -1;
                     this.wipVersion = options.wipVersion || 0;
-                    this.finalVersion = options.finalVersion || 0;
                 },
 
                 frameLabel: function() {
@@ -4871,9 +4959,7 @@
                         case 'whitecard': return 'WHITECARD';
                         case 'comments': return 'CLIENT COMMENTS';
                         case 'wip': return `WIP · ${roundName(this.round)} · v${this.wipVersion}`;
-                        case 'delivered': return this.finalVersion
-                            ? `${roundName(this.round)} · DELIVERED (WIP v${this.finalVersion})`
-                            : `${roundName(this.round)} · DELIVERED — mark a WIP version as final`;
+                        case 'delivered': return `${roundName(this.round)} · DELIVERED`;
                     }
                     return '';
                 },
@@ -4881,10 +4967,10 @@
                 _render: function(ctx) {
                     this.callSuper('_render', ctx);
                     ctx.save();
-                    ctx.font = '600 44px Inter, sans-serif';
+                    ctx.font = '600 56px Inter, sans-serif';
                     ctx.fillStyle = this.stroke;
                     ctx.textBaseline = 'bottom';
-                    ctx.fillText(this.frameLabel(), -this.width / 2 + 6, -this.height / 2 - 20);
+                    ctx.fillText(this.frameLabel(), -this.width / 2 + 6, -this.height / 2 - 24);
                     ctx.restore();
                 },
 
@@ -4892,8 +4978,7 @@
                     return fabric.util.object.extend(this.callSuper('toObject', propertiesToInclude), {
                         frameKind: this.frameKind,
                         round: this.round,
-                        wipVersion: this.wipVersion,
-                        finalVersion: this.finalVersion
+                        wipVersion: this.wipVersion
                     });
                 }
             });
@@ -4916,27 +5001,21 @@
                 for (let i = frames.length - 1; i >= 0; i--) canvas.sendToBack(frames[i]);
             }
 
+            function pointInFrame(f, x, y) {
+                return !!f && x >= f.left && x <= f.left + f.width && y >= f.top && y <= f.top + f.height;
+            }
+
             // The frame (whitecard / WIP version / delivered) under a canvas point, if any.
             // Comment zones don't count — they're free space, not a slot for one render.
             function stageFrameAt(x, y) {
-                return stageFrames().find(f => f.frameKind !== 'comments' &&
-                    x >= f.left && x <= f.left + f.width && y >= f.top && y <= f.top + f.height) || null;
+                return stageFrames().find(f => f.frameKind !== 'comments' && pointInFrame(f, x, y)) || null;
             }
 
-            function framePos(kind, round, version) {
-                const wc = findFrame('whitecard');
-                const ox = wc ? wc.left : 0, oy = wc ? wc.top : 0;
-                let row, col;
-                if (kind === 'comments') { row = round < 0 ? 0 : 2 + 2 * round; col = 1; }
-                else if (kind === 'wip') { row = 1 + 2 * round; col = version - 1; }
-                else { row = 2 + 2 * round; col = 0; } // delivered
-                return { left: ox + col * (FRAME_W + COL_GAP), top: oy + row * (FRAME_H + ROW_GAP) };
-            }
-
-            function addFrame(kind, round, version) {
-                const opts = Object.assign({ frameKind: kind, round, wipVersion: version }, framePos(kind, round, version));
-                if (kind === 'comments') opts.width = FRAME_W * 2 + COL_GAP;
-                const frame = new fabric.StageFrame(opts);
+            function addFrame(kind, round, version, left, top) {
+                const frame = new fabric.StageFrame({
+                    frameKind: kind, round, wipVersion: version, left, top,
+                    width: kind === 'comments' ? COMMENTS_W : FRAME_W
+                });
                 canvas.add(frame);
                 return frame;
             }
@@ -4949,6 +5028,10 @@
                 return stageFrames().reduce((m, f) => (f.frameKind === 'wip' && f.round === round) ? Math.max(m, f.wipVersion) : m, 0);
             }
 
+            function flowBottom() {
+                return stageFrames().reduce((m, f) => Math.max(m, f.top + f.height), -Infinity);
+            }
+
             function panToFrame(frame) {
                 if (!frame) return;
                 const z = canvas.getZoom();
@@ -4959,7 +5042,9 @@
             }
 
             function addVersion(round) {
-                const frame = addFrame('wip', round, lastVersion(round) + 1);
+                const last = findFrame('wip', round, lastVersion(round));
+                if (!last) return;
+                const frame = addFrame('wip', round, last.wipVersion + 1, last.left + FRAME_W + COL_GAP, last.top);
                 sendFramesToBack();
                 saveHistory();
                 panToFrame(frame);
@@ -4967,71 +5052,69 @@
 
             function addRound() {
                 const r = lastRound() + 1;
-                const wip = addFrame('wip', r, 1);
-                addFrame('delivered', r, 0);
-                addFrame('comments', r, 0);
+                const wc = findFrame('whitecard');
+                const x = wc ? wc.left : 0;
+                const wipTop = flowBottom() + ROW_GAP;
+                const deliveredTop = wipTop + FRAME_H + ROW_GAP;
+                const wip = addFrame('wip', r, 1, x, wipTop);
+                addFrame('delivered', r, 0, x, deliveredTop);
+                addFrame('comments', r, 0, x + FRAME_W + COL_GAP, deliveredTop);
                 sendFramesToBack();
                 saveHistory();
                 panToFrame(wip);
             }
 
-            // Copies the renders (images / compare sliders) sitting in a WIP version frame into
-            // that round's delivered frame, replacing whatever was marked final before. Internal
-            // markup on the WIP stays behind — the delivered frame is the clean render only.
-            async function markFinal(round, version) {
-                const wip = findFrame('wip', round, version);
-                const delivered = findFrame('delivered', round);
-                if (!wip || !delivered) return;
-
-                const inWip = (o) => {
-                    const c = o.getCenterPoint();
-                    return c.x >= wip.left && c.x <= wip.left + wip.width && c.y >= wip.top && c.y <= wip.top + wip.height;
-                };
-                const renders = canvas.getObjects().filter(o =>
-                    (o.type === 'image' || o.type === 'compareSlider') && o.finalCopyOfRound === undefined && inWip(o));
-                if (renders.length === 0) {
-                    showShareToast(`Drop the render into WIP v${version} first, then mark it final.`, true);
-                    return;
-                }
-
-                canvas.getObjects().filter(o => o.finalCopyOfRound === round).forEach(o => canvas.remove(o));
-
-                const dx = delivered.left - wip.left, dy = delivered.top - wip.top;
-                for (const src of renders) {
-                    const copy = await cloneFabricObject(src);
-                    copy.set({ left: src.left + dx, top: src.top + dy });
-                    copy.finalCopyOfRound = round;
-                    copy.sourceFileName = src.sourceFileName;
-                    canvas.add(copy);
-                    const objects = canvas.getObjects();
-                    const firstAnnotation = objects.findIndex(o => o !== copy && o.type !== 'image' && o.type !== 'stageFrame' && o.type !== 'compareSlider');
-                    if (firstAnnotation !== -1) copy.moveTo(firstAnnotation);
-                }
-
-                delivered.set('finalVersion', version);
-                canvas.discardActiveObject();
-                canvas.requestRenderAll();
-                saveHistory();
+            function fitImageToFrame(img, frame) {
+                const s = Math.min(frame.width * 0.96 / img.width, frame.height * 0.96 / img.height);
+                img.set({ scaleX: s, scaleY: s });
+                img.setPositionByOrigin(new fabric.Point(frame.left + frame.width / 2, frame.top + frame.height / 2), 'center', 'center');
+                img.setCoords();
             }
+
+            // Dragging an image into a different frame snaps it to fill that frame. Repositioning
+            // it inside the frame it started in is left alone, so manual framing isn't undone.
+            let imageDragStartFrame = null;
+            canvas.on('mouse:down', (opt) => {
+                const t = opt.target;
+                if (t && t.type === 'image') {
+                    const c = t.getCenterPoint();
+                    imageDragStartFrame = stageFrameAt(c.x, c.y);
+                } else {
+                    imageDragStartFrame = null;
+                }
+            });
+            canvas.on('object:modified', (opt) => {
+                const t = opt.target;
+                if (!t || t.type !== 'image' || !opt.transform || opt.transform.action !== 'drag') return;
+                const c = t.getCenterPoint();
+                const frame = stageFrameAt(c.x, c.y);
+                if (!frame || frame === imageDragStartFrame) return;
+                fitImageToFrame(t, frame);
+                canvas.requestRenderAll();
+                // Fold the snap into the same undo step as the drag that caused it.
+                currentState = JSON.stringify(serializeCanvas());
+                updateImageNameLabel();
+                updateMultiSelectToolbar();
+            });
 
             // Called whenever a shot's board is opened: lays out the starting flow on a board
             // that doesn't have one yet, then frames the view on the whitecard row.
             function ensureFlow() {
                 if (stageFrames().length === 0) {
                     const existing = canvas.getObjects();
-                    let origin = { x: 0, y: 0 };
+                    let x = 0, y = 0;
                     if (existing.length) {
                         const bounds = existing.map(o => o.getBoundingRect(true));
-                        origin = {
-                            x: Math.min(...bounds.map(b => b.left)),
-                            y: Math.max(...bounds.map(b => b.top + b.height)) + ROW_GAP * 2
-                        };
+                        x = Math.min(...bounds.map(b => b.left));
+                        y = Math.max(...bounds.map(b => b.top + b.height)) + ROW_GAP * 2;
                     }
-                    canvas.add(new fabric.StageFrame({ frameKind: 'whitecard', left: origin.x, top: origin.y }));
-                    addFrame('comments', -1, 0);
-                    addFrame('wip', 0, 1);
-                    addFrame('delivered', 0, 0);
-                    addFrame('comments', 0, 0);
+                    const rowH = FRAME_H + ROW_GAP;
+                    const commentsX = x + FRAME_W + COL_GAP;
+                    canvas.add(new fabric.StageFrame({ frameKind: 'whitecard', left: x, top: y }));
+                    addFrame('comments', -1, 0, commentsX, y);
+                    addFrame('wip', 0, 1, x, y + rowH);
+                    addFrame('delivered', 0, 0, x, y + rowH * 2);
+                    addFrame('comments', 0, 0, commentsX, y + rowH * 2);
                     sendFramesToBack();
                     // The starting layout is the board's baseline, not an undoable step.
                     currentState = JSON.stringify(serializeCanvas());
@@ -5047,27 +5130,147 @@
                 resizeCanvas();
                 const cw = canvas.getWidth(), ch = canvas.getHeight();
                 if (cw <= 0 || ch <= 0) return;
-                const spanW = FRAME_W * 2 + COL_GAP; // the whitecard plus the start of its comments
-                const zoom = Math.min(cw * 0.9 / spanW, ch * 0.8 / (FRAME_H * 1.6));
-                canvas.setViewportTransform([zoom, 0, 0, zoom, cw * 0.05 - wc.left * zoom, 90 - wc.top * zoom]);
+                // Show some empty room to the left of the main column, the whitecard, and the
+                // start of its comments zone.
+                const leftRoom = COL_GAP;
+                const spanW = leftRoom + FRAME_W * 2 + COL_GAP;
+                const zoom = Math.min(cw * 0.95 / spanW, ch * 0.8 / (FRAME_H * 1.8));
+                canvas.setViewportTransform([zoom, 0, 0, zoom, (leftRoom - wc.left) * zoom + cw * 0.025, 110 - wc.top * zoom]);
+            }
+
+            // --- Thumbnail + list metadata written on save -----------------------------------
+            // The preview is the most recent render on the board (lowest frame that has an
+            // image, highest WIP version within a row), drawn straight from the image's own
+            // pixels — not a screenshot of wherever the view happens to be panned.
+            function pickHeroImage() {
+                const imgs = canvas.getObjects().filter(o => o.type === 'image');
+                if (imgs.length === 0) return null;
+                const frames = stageFrames().filter(f => f.frameKind !== 'comments')
+                    .sort((a, b) => (b.top - a.top) || (b.left - a.left));
+                for (const f of frames) {
+                    const hit = imgs.find(o => { const c = o.getCenterPoint(); return pointInFrame(f, c.x, c.y); });
+                    if (hit) return hit;
+                }
+                return imgs[imgs.length - 1];
+            }
+
+            function makeThumbDataUrl() {
+                const img = pickHeroImage();
+                if (!img) return null;
+                const el = img.getElement();
+                const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+                if (!w || !h) return null;
+                const tw = 640, th = Math.round(tw * h / w);
+                const c = document.createElement('canvas');
+                c.width = tw;
+                c.height = th;
+                c.getContext('2d').drawImage(el, 0, 0, tw, th);
+                return c.toDataURL('image/jpeg', 0.82);
+            }
+
+            async function updateShotMeta(boardId, thumbId, savedAt) {
+                try {
+                    const project = await loadProject();
+                    const entry = project && project.boards.find(b => b.id === boardId);
+                    if (entry) {
+                        entry.updatedAt = savedAt;
+                        if (thumbId) entry.thumbId = thumbId;
+                        await storagePutJSON(`_project-${appState.projectId}.json`, project);
+                    }
+                    const index = await loadIndex();
+                    const p = index.projects.find(x => x.id === appState.projectId);
+                    if (p) {
+                        p.updatedAt = savedAt;
+                        if (thumbId) p.thumbId = thumbId;
+                        await storagePutJSON('_index.json', index);
+                    }
+                } catch (err) {
+                    console.error('Update shot metadata failed:', err);
+                }
             }
 
             // --- Flow overlay buttons (HTML, tracked over the canvas on every render) ---------
             const flowOverlay = document.getElementById('flow-overlay');
-            let flowButtons = [];
+            let flowButtons = []; // { el, x(), y(), align }
             let flowOverlayKey = '';
             let flowUidSeq = 0;
 
-            function makeFlowButton(html, onClick, extraClass) {
+            function makeFlowButton(html, onClick) {
                 const b = document.createElement('button');
-                b.className = 'flow-btn' + (extraClass ? ' ' + extraClass : '');
+                b.className = 'flow-btn';
                 b.style.left = '0';
                 b.style.top = '0';
                 b.innerHTML = html;
                 b.addEventListener('mousedown', e => e.stopPropagation());
-                b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+                if (onClick) b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
                 flowOverlay.appendChild(b);
                 return b;
+            }
+
+            // Drags a frame plus everything whose center sits inside it (callouts come along
+            // whole if their tip or note is inside), so annotations stay put relative to it.
+            function startFrameDrag(frame, e) {
+                e.preventDefault();
+                e.stopPropagation();
+                const zoom = canvas.getZoom();
+                const startX = e.clientX, startY = e.clientY;
+                const frameStart = { left: frame.left, top: frame.top };
+                const movers = [];
+                const calloutsTaken = new Set();
+
+                canvas.getObjects().forEach(o => {
+                    if (o.type === 'stageFrame' || guideLines.includes(o)) return;
+                    if (o.calloutId) {
+                        if (calloutsTaken.has(o.calloutId)) return;
+                        const entry = calloutRegistry[o.calloutId];
+                        if (!entry || !entry.leg1 || !entry.leg2 || !entry.head || !entry.frame || !entry.box) return;
+                        const bc = entry.box.getCenterPoint();
+                        if (!pointInFrame(frame, entry.leg1.tipX, entry.leg1.tipY) && !pointInFrame(frame, bc.x, bc.y)) return;
+                        calloutsTaken.add(o.calloutId);
+                        movers.push({
+                            entry,
+                            l1: { x1: entry.leg1.x1, y1: entry.leg1.y1, x2: entry.leg1.x2, y2: entry.leg1.y2, tipX: entry.leg1.tipX, tipY: entry.leg1.tipY },
+                            l2: { x1: entry.leg2.x1, y1: entry.leg2.y1, x2: entry.leg2.x2, y2: entry.leg2.y2 },
+                            parts: ['head', 'frame', 'box'].map(k => ({ obj: entry[k], left: entry[k].left, top: entry[k].top }))
+                        });
+                        return;
+                    }
+                    const c = o.getCenterPoint();
+                    if (pointInFrame(frame, c.x, c.y)) movers.push({ obj: o, left: o.left, top: o.top });
+                });
+
+                const onMove = (ev) => {
+                    const dx = (ev.clientX - startX) / zoom, dy = (ev.clientY - startY) / zoom;
+                    frame.set({ left: frameStart.left + dx, top: frameStart.top + dy });
+                    frame.setCoords();
+                    movers.forEach(m => {
+                        if (m.obj) {
+                            m.obj.set({ left: m.left + dx, top: m.top + dy });
+                            m.obj.setCoords();
+                            return;
+                        }
+                        m.entry.leg1.set({
+                            x1: m.l1.x1 + dx, y1: m.l1.y1 + dy, x2: m.l1.x2 + dx, y2: m.l1.y2 + dy,
+                            tipX: m.l1.tipX + dx, tipY: m.l1.tipY + dy
+                        });
+                        m.entry.leg2.set({ x1: m.l2.x1 + dx, y1: m.l2.y1 + dy, x2: m.l2.x2 + dx, y2: m.l2.y2 + dy });
+                        m.entry.leg1.setCoords();
+                        m.entry.leg2.setCoords();
+                        m.parts.forEach(p => { p.obj.set({ left: p.left + dx, top: p.top + dy }); p.obj.setCoords(); });
+                    });
+                    canvas.requestRenderAll();
+                    updateMultiSelectToolbar();
+                    updateImageNameLabel();
+                };
+                const onUp = () => {
+                    window.removeEventListener('mousemove', onMove);
+                    window.removeEventListener('mouseup', onUp);
+                    document.body.style.cursor = '';
+                    if (frame.left !== frameStart.left || frame.top !== frameStart.top) saveHistory();
+                };
+                document.body.style.cursor = 'grabbing';
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onUp);
             }
 
             function rebuildFlowOverlay() {
@@ -5076,35 +5279,31 @@
                 const frames = stageFrames();
                 if (frames.length === 0) return;
 
-                frames.filter(f => f.frameKind === 'wip').forEach(f => {
-                    const delivered = findFrame('delivered', f.round);
-                    const isFinal = !!delivered && delivered.finalVersion === f.wipVersion;
-                    const el = makeFlowButton(
-                        isFinal ? '<i class="fa-solid fa-star"></i>Final' : '<i class="fa-regular fa-star"></i>Mark final',
-                        () => markFinal(f.round, f.wipVersion),
-                        isFinal ? 'is-final' : '');
-                    flowButtons.push({ el, x: f.left + f.width, y: f.top, align: 'right-above' });
+                frames.forEach(f => {
+                    const el = makeFlowButton('<i class="fa-solid fa-up-down-left-right"></i>Move');
+                    el.style.cursor = 'grab';
+                    el.addEventListener('mousedown', (e) => startFrameDrag(f, e));
+                    flowButtons.push({ el, x: () => f.left + f.width, y: () => f.top, align: 'right-above' });
                 });
 
                 new Set(frames.filter(f => f.frameKind === 'wip').map(f => f.round)).forEach(r => {
-                    const last = findFrame('wip', r, lastVersion(r));
                     const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Version', () => addVersion(r));
-                    flowButtons.push({ el, x: last.left + last.width + COL_GAP * 0.25, y: last.top + last.height / 2, align: 'left-center' });
+                    const last = () => findFrame('wip', r, lastVersion(r));
+                    flowButtons.push({ el, x: () => last().left + last().width + 60, y: () => last().top + last().height / 2, align: 'left-center' });
                 });
 
-                const anchor = findFrame('delivered', lastRound()) || findFrame('whitecard');
-                if (anchor) {
-                    const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Next round', addRound);
-                    flowButtons.push({ el, x: anchor.left, y: anchor.top + anchor.height + ROW_GAP / 2, align: 'left-center' });
-                }
+                const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Next round', addRound);
+                const lowest = () => stageFrames().filter(f => f.frameKind !== 'comments').sort((a, b) => (b.top + b.height) - (a.top + a.height))[0];
+                flowButtons.push({ el, x: () => lowest().left, y: () => lowest().top + lowest().height + 160, align: 'left-center' });
+
                 positionFlowOverlay();
             }
 
             function positionFlowOverlay() {
                 const vpt = canvas.viewportTransform;
                 flowButtons.forEach(b => {
-                    const sx = b.x * vpt[0] + vpt[4];
-                    const sy = b.y * vpt[3] + vpt[5];
+                    const sx = b.x() * vpt[0] + vpt[4];
+                    const sy = b.y() * vpt[3] + vpt[5];
                     const w = b.el.offsetWidth, h = b.el.offsetHeight;
                     let left = sx, top = sy - h / 2;
                     if (b.align === 'right-above') { left = sx - w; top = sy - h - 8; }
@@ -5112,13 +5311,13 @@
                 });
             }
 
-            // Rebuild the buttons only when the set of frames changes (added, re-marked final,
-            // or replaced wholesale by an undo/load, which creates fresh objects); otherwise
-            // just move them to follow pan/zoom.
+            // Rebuild the buttons only when the set of frames changes (added, or replaced
+            // wholesale by an undo/load, which creates fresh objects); otherwise just move them
+            // to follow pan/zoom and frame drags.
             canvas.on('after:render', () => {
                 const key = stageFrames().map(f => {
                     if (!f.__flowUid) f.__flowUid = ++flowUidSeq;
-                    return `${f.__flowUid}:${f.finalVersion}`;
+                    return f.__flowUid;
                 }).join('|');
                 if (key !== flowOverlayKey) {
                     flowOverlayKey = key;
@@ -5127,6 +5326,7 @@
                     positionFlowOverlay();
                 }
             });
+
 
         });
     </script>
