@@ -4318,7 +4318,7 @@
                 // Any single selected object also gets this floating toolbar — for Reorder
                 // (and, for images specifically, Compare). The align/layout/scale buttons stay
                 // hidden since they need 2+ objects.
-                const isSingleObject = !!activeObj && activeObj.type !== 'activeSelection';
+                const isSingleObject = !!activeObj && activeObj.type !== 'activeSelection' && activeObj.type !== 'stageFrame';
                 const isSingleImage = !!activeObj && activeObj.type === 'image';
 
                 if (isMultiSelect || isSingleObject) {
@@ -4914,17 +4914,18 @@
             });
 
             // --- Stage flow: Whitecard -> WIP -> delivered -> client comments, per round -----
-            // Each stage is a frame on the canvas. Frames aren't selectable (clicks go through to
-            // whatever tool is active); each one has a Move handle in the overlay instead, which
-            // drags the frame together with everything sitting inside it. New versions go to the
-            // right of the last version in their row; a new round goes below the lowest frame.
+            // Each stage is a frame on the canvas. In Select mode you drag a frame directly and
+            // everything overlapping it comes along; the drawing tools click straight through
+            // frames. New versions go to the right of the last version in their row; a new round
+            // goes below the lowest frame.
             // Frames live in the canvas JSON like everything else, so undo/save/load just work.
             const FRAME_W = 1600, FRAME_H = 900, COL_GAP = 600, ROW_GAP = 700;
             const COMMENTS_W = FRAME_W * 2 + COL_GAP;
+            const FRAME_LABEL_STRIP = 120; // height of the grabbable title area above each frame
             const FRAME_STYLE = {
                 whitecard: { stroke: '#9ca3af', fill: 'rgba(255,255,255,0.035)' },
                 wip:       { stroke: '#6b7280', fill: 'rgba(255,255,255,0.03)' },
-                delivered: { stroke: '#3b82f6', fill: 'rgba(59,130,246,0.05)' },
+                delivered: { stroke: '#9ca3af', fill: 'rgba(255,255,255,0.035)' },
                 comments:  { stroke: '#4b5563', fill: 'rgba(255,255,255,0.012)', dash: [28, 18] }
             };
 
@@ -4934,8 +4935,12 @@
 
             fabric.StageFrame = fabric.util.createClass(fabric.Rect, {
                 type: 'stageFrame',
-                selectable: false,
-                evented: false,
+                // Grabbable in Select mode (setMode turns everything non-evented for the drawing
+                // tools, so frames never get in the way of those). Move-only: no resize/rotate.
+                hasControls: false,
+                lockScalingX: true,
+                lockScalingY: true,
+                lockRotation: true,
                 objectCaching: false, // the label is drawn outside the rect's own bounds
                 hoverCursor: 'default',
 
@@ -4962,6 +4967,19 @@
                         case 'delivered': return `${roundName(this.round)} · DELIVERED`;
                     }
                     return '';
+                },
+
+                // The title strip above the frame also counts as the frame for clicks, so it can
+                // still be grabbed once a render covers the whole frame. `point` arrives in
+                // viewport (screen) space unless `absolute` is set, matching fabric's oCoords.
+                containsPoint: function(point, lines, absolute, calculate) {
+                    if (this.callSuper('containsPoint', point, lines, absolute, calculate)) return true;
+                    let p = point;
+                    if (!absolute && this.canvas) {
+                        p = fabric.util.transformPoint(point, fabric.util.invertTransform(this.canvas.viewportTransform));
+                    }
+                    return p.x >= this.left && p.x <= this.left + this.width &&
+                        p.y >= this.top - FRAME_LABEL_STRIP && p.y < this.top;
                 },
 
                 _render: function(ctx) {
@@ -5207,25 +5225,23 @@
                 return b;
             }
 
-            // Drags a frame plus everything whose center sits inside it (callouts come along
-            // whole if their tip or note is inside), so annotations stay put relative to it.
-            function startFrameDrag(frame, e) {
-                e.preventDefault();
-                e.stopPropagation();
-                const zoom = canvas.getZoom();
-                const startX = e.clientX, startY = e.clientY;
-                const frameStart = { left: frame.left, top: frame.top };
+            // Dragging a frame carries everything overlapping it along (callouts come whole if
+            // their tip or note overlaps), so renders and markups keep their place on it.
+            // Snapshot on mouse:down, apply the frame's own delta on each object:moving tick.
+            let frameDrag = null; // { frame, left, top, movers }
+
+            function collectFrameMovers(frame) {
+                const frameRect = { left: frame.left, top: frame.top, width: frame.width, height: frame.height };
                 const movers = [];
                 const calloutsTaken = new Set();
-
                 canvas.getObjects().forEach(o => {
                     if (o.type === 'stageFrame' || guideLines.includes(o)) return;
                     if (o.calloutId) {
                         if (calloutsTaken.has(o.calloutId)) return;
                         const entry = calloutRegistry[o.calloutId];
                         if (!entry || !entry.leg1 || !entry.leg2 || !entry.head || !entry.frame || !entry.box) return;
-                        const bc = entry.box.getCenterPoint();
-                        if (!pointInFrame(frame, entry.leg1.tipX, entry.leg1.tipY) && !pointInFrame(frame, bc.x, bc.y)) return;
+                        if (!pointInFrame(frame, entry.leg1.tipX, entry.leg1.tipY) &&
+                            !rectsOverlap(frameRect, entry.box.getBoundingRect(true))) return;
                         calloutsTaken.add(o.calloutId);
                         movers.push({
                             entry,
@@ -5235,56 +5251,46 @@
                         });
                         return;
                     }
-                    const c = o.getCenterPoint();
-                    if (pointInFrame(frame, c.x, c.y)) movers.push({ obj: o, left: o.left, top: o.top });
+                    if (rectsOverlap(frameRect, o.getBoundingRect(true))) movers.push({ obj: o, left: o.left, top: o.top });
                 });
-
-                const onMove = (ev) => {
-                    const dx = (ev.clientX - startX) / zoom, dy = (ev.clientY - startY) / zoom;
-                    frame.set({ left: frameStart.left + dx, top: frameStart.top + dy });
-                    frame.setCoords();
-                    movers.forEach(m => {
-                        if (m.obj) {
-                            m.obj.set({ left: m.left + dx, top: m.top + dy });
-                            m.obj.setCoords();
-                            return;
-                        }
-                        m.entry.leg1.set({
-                            x1: m.l1.x1 + dx, y1: m.l1.y1 + dy, x2: m.l1.x2 + dx, y2: m.l1.y2 + dy,
-                            tipX: m.l1.tipX + dx, tipY: m.l1.tipY + dy
-                        });
-                        m.entry.leg2.set({ x1: m.l2.x1 + dx, y1: m.l2.y1 + dy, x2: m.l2.x2 + dx, y2: m.l2.y2 + dy });
-                        m.entry.leg1.setCoords();
-                        m.entry.leg2.setCoords();
-                        m.parts.forEach(p => { p.obj.set({ left: p.left + dx, top: p.top + dy }); p.obj.setCoords(); });
-                    });
-                    canvas.requestRenderAll();
-                    updateMultiSelectToolbar();
-                    updateImageNameLabel();
-                };
-                const onUp = () => {
-                    window.removeEventListener('mousemove', onMove);
-                    window.removeEventListener('mouseup', onUp);
-                    document.body.style.cursor = '';
-                    if (frame.left !== frameStart.left || frame.top !== frameStart.top) saveHistory();
-                };
-                document.body.style.cursor = 'grabbing';
-                window.addEventListener('mousemove', onMove);
-                window.addEventListener('mouseup', onUp);
+                return movers;
             }
+
+            function applyFrameMovers(movers, dx, dy) {
+                movers.forEach(m => {
+                    if (m.obj) {
+                        m.obj.set({ left: m.left + dx, top: m.top + dy });
+                        m.obj.setCoords();
+                        return;
+                    }
+                    m.entry.leg1.set({
+                        x1: m.l1.x1 + dx, y1: m.l1.y1 + dy, x2: m.l1.x2 + dx, y2: m.l1.y2 + dy,
+                        tipX: m.l1.tipX + dx, tipY: m.l1.tipY + dy
+                    });
+                    m.entry.leg2.set({ x1: m.l2.x1 + dx, y1: m.l2.y1 + dy, x2: m.l2.x2 + dx, y2: m.l2.y2 + dy });
+                    m.entry.leg1.setCoords();
+                    m.entry.leg2.setCoords();
+                    m.parts.forEach(p => { p.obj.set({ left: p.left + dx, top: p.top + dy }); p.obj.setCoords(); });
+                });
+            }
+
+            canvas.on('mouse:down', (opt) => {
+                const t = opt.target;
+                frameDrag = (t && t.type === 'stageFrame' && currentMode === 'select')
+                    ? { frame: t, left: t.left, top: t.top, movers: collectFrameMovers(t) }
+                    : null;
+            });
+            canvas.on('object:moving', (opt) => {
+                if (!frameDrag || opt.target !== frameDrag.frame) return;
+                applyFrameMovers(frameDrag.movers, frameDrag.frame.left - frameDrag.left, frameDrag.frame.top - frameDrag.top);
+            });
+            canvas.on('mouse:up', () => { frameDrag = null; });
 
             function rebuildFlowOverlay() {
                 flowOverlay.innerHTML = '';
                 flowButtons = [];
                 const frames = stageFrames();
                 if (frames.length === 0) return;
-
-                frames.forEach(f => {
-                    const el = makeFlowButton('<i class="fa-solid fa-up-down-left-right"></i>Move');
-                    el.style.cursor = 'grab';
-                    el.addEventListener('mousedown', (e) => startFrameDrag(f, e));
-                    flowButtons.push({ el, x: () => f.left + f.width, y: () => f.top, align: 'right-above' });
-                });
 
                 new Set(frames.filter(f => f.frameKind === 'wip').map(f => f.round)).forEach(r => {
                     const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Version', () => addVersion(r));
