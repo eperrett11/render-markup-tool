@@ -328,6 +328,26 @@
             white-space: nowrap;
         }
         .history-item:hover { background: rgba(255, 255, 255, 0.07); }
+
+        .flow-btn {
+            position: absolute;
+            pointer-events: auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            font-size: 11px;
+            font-weight: 600;
+            color: #d1d5db;
+            background: rgba(3, 7, 18, 0.9);
+            border: 1px solid #374151;
+            border-radius: 7px;
+            padding: 5px 9px;
+            cursor: pointer;
+            transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
+        }
+        .flow-btn:hover { color: #fff; border-color: #3b82f6; }
+        .flow-btn.is-final { color: #93c5fd; border-color: #3b82f6; background: rgba(37, 99, 235, 0.18); }
         .history-item.current { color: #60a5fa; }
     </style>
 </head>
@@ -515,6 +535,9 @@
 
         <div id="canvas-container">
             <canvas id="c"></canvas>
+            <!-- Buttons for the stage-flow frames (Mark final, + Version, + Next round),
+                 repositioned over their frames on every canvas render. -->
+            <div id="flow-overlay" class="absolute inset-0 pointer-events-none overflow-hidden z-20"></div>
         </div>
 
         <div id="multi-select-toolbar" class="absolute z-50 flex bg-gray-950/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl p-1.5 gap-1">
@@ -693,8 +716,8 @@
                 // #view-editor starts hidden (the app boots into the home/projects view), so
                 // canvasContainer has zero size at this point — fall back to the window size;
                 // showView('editor') resizes it properly once the container is actually visible.
-                width: canvasContainer.clientWidth || window.innerWidth,
-                height: canvasContainer.clientHeight || (window.innerHeight - 64),
+                width: canvasContainer.clientWidth || Math.max(window.innerWidth, 1),
+                height: canvasContainer.clientHeight || Math.max(window.innerHeight - 64, 1),
                 preserveObjectStacking: true, // Ensure objects stay in selected z-index order
                 fireMiddleClick: true, // Enable middle mouse interaction for panning
                 targetFindTolerance: 4, // A little forgiveness for perPixelTargetFind hit tests (callout legs)
@@ -731,14 +754,23 @@
             let currentState = null;
             let isUndoing = false;
 
+            // Custom tags that must survive toJSON/loadFromJSON: callout tags so undo can relink
+            // parts and keep the tip anchor correct, and finalCopyOfRound so re-marking a WIP
+            // version as final can find (and replace) the previous delivered copy.
+            const SERIALIZE_PROPS = ['calloutId', 'calloutRole', 'tipX', 'tipY', 'finalCopyOfRound'];
+
+            function serializeCanvas() {
+                return canvas.toJSON(SERIALIZE_PROPS);
+            }
+
             function saveHistory() {
                 if (isUndoing) return;
+                sendFramesToBack();
                 if (currentState) {
                     history.push(currentState);
                     if (history.length > 30) history.shift(); // Keep last 30 actions
                 }
-                // Include callout tags so undo can relink parts and keep the tip anchor correct
-                currentState = JSON.stringify(canvas.toJSON(['calloutId', 'calloutRole', 'tipX', 'tipY']));
+                currentState = JSON.stringify(serializeCanvas());
                 updateActionButtons();
             }
 
@@ -1364,14 +1396,16 @@
                                 canvas.renderAll();
                                 rebuildCalloutRegistry();
                                 currentState = JSON.stringify(v.canvasJson);
+                                ensureFlow();
                                 updateActionButtons();
                                 shareToast.classList.add('hidden');
                             });
                         } else {
+                            ensureFlow();
                             shareToast.classList.add('hidden');
                         }
                     } else {
-                        canvas.renderAll();
+                        ensureFlow();
                         updateActionButtons();
                         shareToast.classList.add('hidden');
                     }
@@ -1390,7 +1424,7 @@
                 if (!appState.boardId) return;
                 showShareToast('Saving…');
                 try {
-                    const canvasJson = canvas.toJSON(['calloutId', 'calloutRole', 'tipX', 'tipY']);
+                    const canvasJson = serializeCanvas();
                     const thumb = canvas.toDataURL({ format: 'png', multiplier: Math.min(1, 480 / canvas.getWidth()) });
                     const id = newId();
                     const savedAt = new Date().toISOString();
@@ -2824,16 +2858,6 @@
                     const img = new fabric.Image(imgElement);
                     img.sourceFileName = fileName;
 
-                    // Scale down large images initially to fit canvas nicely
-                    const maxW = options.maxW || cWidth * 0.8;
-                    const maxH = options.maxH || cHeight * 0.8;
-                    if (img.width > maxW || img.height > maxH) {
-                        img.scaleToWidth(maxW);
-                        if (img.getScaledHeight() > maxH) {
-                            img.scaleToHeight(maxH);
-                        }
-                    }
-
                     // Calculate target drop location. If defaulting to center,
                     // make sure it drops in the VISUAL center of current pan/zoom
                     const vpt = canvas.viewportTransform;
@@ -2843,6 +2867,26 @@
                     if (dropPointer && typeof dropPointer.x === 'number' && !isNaN(dropPointer.x)) {
                         targetX = dropPointer.x;
                         targetY = dropPointer.y;
+                    }
+
+                    // Landing on a stage frame (whitecard / WIP version / delivered) fits the
+                    // image to that frame and centers it there, scaling up or down.
+                    const frame = options.maxW ? null : stageFrameAt(targetX, targetY);
+                    if (frame) {
+                        const fit = Math.min(frame.width * 0.94 / img.width, frame.height * 0.94 / img.height);
+                        img.scale(fit);
+                        targetX = frame.left + frame.width / 2;
+                        targetY = frame.top + frame.height / 2;
+                    } else {
+                        // Scale down large images initially to fit canvas nicely
+                        const maxW = options.maxW || cWidth * 0.8;
+                        const maxH = options.maxH || cHeight * 0.8;
+                        if (img.width > maxW || img.height > maxH) {
+                            img.scaleToWidth(maxW);
+                            if (img.getScaledHeight() > maxH) {
+                                img.scaleToHeight(maxH);
+                            }
+                        }
                     }
 
                     // Apply coordinates and properties. Land it slightly small/transparent
@@ -2868,7 +2912,7 @@
                     const objects = canvas.getObjects();
                     let lowestAnnotationIndex = -1;
                     for (let i = 0; i < objects.length - 1; i++) {
-                        if (objects[i].type !== 'image') {
+                        if (objects[i].type !== 'image' && objects[i].type !== 'stageFrame') {
                             lowestAnnotationIndex = i;
                             break;
                         }
@@ -3993,7 +4037,7 @@
                             const canvasObjects = canvas.getObjects();
                             let lowestAnnotationIndex = -1;
                             for (let i = 0; i < canvasObjects.length - 1; i++) {
-                                if (canvasObjects[i].type !== 'image') { lowestAnnotationIndex = i; break; }
+                                if (canvasObjects[i].type !== 'image' && canvasObjects[i].type !== 'stageFrame') { lowestAnnotationIndex = i; break; }
                             }
                             if (lowestAnnotationIndex !== -1) cloned.moveTo(lowestAnnotationIndex);
                         }
@@ -4364,7 +4408,7 @@
 
                 allObjects.forEach(otherObj => {
                     // Callouts are handled separately below, keyed off their combined bounds
-                    if (otherObj !== obj && otherObj.type !== 'image' && !guideLines.includes(otherObj) && !otherObj.calloutId) {
+                    if (otherObj !== obj && otherObj.type !== 'image' && otherObj.type !== 'stageFrame' && !guideLines.includes(otherObj) && !otherObj.calloutId) {
                         const otherBounds = otherObj.getBoundingRect(true);
                         // Any overlap at all with the image counts — not just full containment
                         if (rectsOverlap(objBounds, otherBounds)) {
@@ -4778,6 +4822,309 @@
 
                 if (activeObj.type === 'image') {
                     startComparePicking(activeObj);
+                }
+            });
+
+            // --- Stage flow: Whitecard -> WIP -> delivered -> client comments, per round -----
+            // Each stage is a locked frame on the canvas (not selectable — you drop renders and
+            // draw on top of it). Rows run top to bottom, one per stage; WIP versions and client
+            // comments extend to the right of their row. Positions are derived from each frame's
+            // (frameKind, round, version) relative to the whitecard frame, and frames live in the
+            // canvas JSON like everything else, so undo/save/load need no special handling.
+            const FRAME_W = 1600, FRAME_H = 900, COL_GAP = 160, ROW_GAP = 280;
+            const FRAME_STYLE = {
+                whitecard: { stroke: '#9ca3af', fill: 'rgba(255,255,255,0.035)' },
+                wip:       { stroke: '#6b7280', fill: 'rgba(255,255,255,0.03)' },
+                delivered: { stroke: '#3b82f6', fill: 'rgba(59,130,246,0.05)' },
+                comments:  { stroke: '#4b5563', fill: 'rgba(255,255,255,0.012)', dash: [28, 18] }
+            };
+
+            function roundName(round) {
+                return round === 0 ? 'ICD' : 'R' + String(round).padStart(2, '0');
+            }
+
+            fabric.StageFrame = fabric.util.createClass(fabric.Rect, {
+                type: 'stageFrame',
+                selectable: false,
+                evented: false,
+                objectCaching: false, // the label is drawn outside the rect's own bounds
+                hoverCursor: 'default',
+
+                initialize: function(options) {
+                    options = options || {};
+                    const style = FRAME_STYLE[options.frameKind] || FRAME_STYLE.wip;
+                    this.callSuper('initialize', Object.assign({
+                        originX: 'left', originY: 'top',
+                        width: FRAME_W, height: FRAME_H,
+                        rx: 18, ry: 18,
+                        fill: style.fill, stroke: style.stroke, strokeWidth: 3,
+                        strokeDashArray: style.dash || null
+                    }, options));
+                    this.frameKind = options.frameKind;
+                    this.round = options.round !== undefined ? options.round : -1;
+                    this.wipVersion = options.wipVersion || 0;
+                    this.finalVersion = options.finalVersion || 0;
+                },
+
+                frameLabel: function() {
+                    switch (this.frameKind) {
+                        case 'whitecard': return 'WHITECARD';
+                        case 'comments': return 'CLIENT COMMENTS';
+                        case 'wip': return `WIP · ${roundName(this.round)} · v${this.wipVersion}`;
+                        case 'delivered': return this.finalVersion
+                            ? `${roundName(this.round)} · DELIVERED (WIP v${this.finalVersion})`
+                            : `${roundName(this.round)} · DELIVERED — mark a WIP version as final`;
+                    }
+                    return '';
+                },
+
+                _render: function(ctx) {
+                    this.callSuper('_render', ctx);
+                    ctx.save();
+                    ctx.font = '600 44px Inter, sans-serif';
+                    ctx.fillStyle = this.stroke;
+                    ctx.textBaseline = 'bottom';
+                    ctx.fillText(this.frameLabel(), -this.width / 2 + 6, -this.height / 2 - 20);
+                    ctx.restore();
+                },
+
+                toObject: function(propertiesToInclude) {
+                    return fabric.util.object.extend(this.callSuper('toObject', propertiesToInclude), {
+                        frameKind: this.frameKind,
+                        round: this.round,
+                        wipVersion: this.wipVersion,
+                        finalVersion: this.finalVersion
+                    });
+                }
+            });
+            fabric.StageFrame.fromObject = function(object, callback) {
+                return fabric.Object._fromObject('StageFrame', object, callback);
+            };
+
+            function stageFrames() {
+                return canvas.getObjects().filter(o => o.type === 'stageFrame');
+            }
+
+            function findFrame(kind, round, version) {
+                return stageFrames().find(f => f.frameKind === kind &&
+                    (round === undefined || f.round === round) &&
+                    (version === undefined || f.wipVersion === version));
+            }
+
+            function sendFramesToBack() {
+                const frames = stageFrames();
+                for (let i = frames.length - 1; i >= 0; i--) canvas.sendToBack(frames[i]);
+            }
+
+            // The frame (whitecard / WIP version / delivered) under a canvas point, if any.
+            // Comment zones don't count — they're free space, not a slot for one render.
+            function stageFrameAt(x, y) {
+                return stageFrames().find(f => f.frameKind !== 'comments' &&
+                    x >= f.left && x <= f.left + f.width && y >= f.top && y <= f.top + f.height) || null;
+            }
+
+            function framePos(kind, round, version) {
+                const wc = findFrame('whitecard');
+                const ox = wc ? wc.left : 0, oy = wc ? wc.top : 0;
+                let row, col;
+                if (kind === 'comments') { row = round < 0 ? 0 : 2 + 2 * round; col = 1; }
+                else if (kind === 'wip') { row = 1 + 2 * round; col = version - 1; }
+                else { row = 2 + 2 * round; col = 0; } // delivered
+                return { left: ox + col * (FRAME_W + COL_GAP), top: oy + row * (FRAME_H + ROW_GAP) };
+            }
+
+            function addFrame(kind, round, version) {
+                const opts = Object.assign({ frameKind: kind, round, wipVersion: version }, framePos(kind, round, version));
+                if (kind === 'comments') opts.width = FRAME_W * 2 + COL_GAP;
+                const frame = new fabric.StageFrame(opts);
+                canvas.add(frame);
+                return frame;
+            }
+
+            function lastRound() {
+                return stageFrames().reduce((m, f) => (f.frameKind === 'wip' || f.frameKind === 'delivered') ? Math.max(m, f.round) : m, -1);
+            }
+
+            function lastVersion(round) {
+                return stageFrames().reduce((m, f) => (f.frameKind === 'wip' && f.round === round) ? Math.max(m, f.wipVersion) : m, 0);
+            }
+
+            function panToFrame(frame) {
+                if (!frame) return;
+                const z = canvas.getZoom();
+                const vpt = canvas.viewportTransform.slice();
+                vpt[4] = canvas.getWidth() / 2 - (frame.left + frame.width / 2) * z;
+                vpt[5] = canvas.getHeight() / 2 - (frame.top + frame.height / 2) * z;
+                canvas.setViewportTransform(vpt);
+            }
+
+            function addVersion(round) {
+                const frame = addFrame('wip', round, lastVersion(round) + 1);
+                sendFramesToBack();
+                saveHistory();
+                panToFrame(frame);
+            }
+
+            function addRound() {
+                const r = lastRound() + 1;
+                const wip = addFrame('wip', r, 1);
+                addFrame('delivered', r, 0);
+                addFrame('comments', r, 0);
+                sendFramesToBack();
+                saveHistory();
+                panToFrame(wip);
+            }
+
+            // Copies the renders (images / compare sliders) sitting in a WIP version frame into
+            // that round's delivered frame, replacing whatever was marked final before. Internal
+            // markup on the WIP stays behind — the delivered frame is the clean render only.
+            async function markFinal(round, version) {
+                const wip = findFrame('wip', round, version);
+                const delivered = findFrame('delivered', round);
+                if (!wip || !delivered) return;
+
+                const inWip = (o) => {
+                    const c = o.getCenterPoint();
+                    return c.x >= wip.left && c.x <= wip.left + wip.width && c.y >= wip.top && c.y <= wip.top + wip.height;
+                };
+                const renders = canvas.getObjects().filter(o =>
+                    (o.type === 'image' || o.type === 'compareSlider') && o.finalCopyOfRound === undefined && inWip(o));
+                if (renders.length === 0) {
+                    showShareToast(`Drop the render into WIP v${version} first, then mark it final.`, true);
+                    return;
+                }
+
+                canvas.getObjects().filter(o => o.finalCopyOfRound === round).forEach(o => canvas.remove(o));
+
+                const dx = delivered.left - wip.left, dy = delivered.top - wip.top;
+                for (const src of renders) {
+                    const copy = await cloneFabricObject(src);
+                    copy.set({ left: src.left + dx, top: src.top + dy });
+                    copy.finalCopyOfRound = round;
+                    copy.sourceFileName = src.sourceFileName;
+                    canvas.add(copy);
+                    const objects = canvas.getObjects();
+                    const firstAnnotation = objects.findIndex(o => o !== copy && o.type !== 'image' && o.type !== 'stageFrame' && o.type !== 'compareSlider');
+                    if (firstAnnotation !== -1) copy.moveTo(firstAnnotation);
+                }
+
+                delivered.set('finalVersion', version);
+                canvas.discardActiveObject();
+                canvas.requestRenderAll();
+                saveHistory();
+            }
+
+            // Called whenever a shot's board is opened: lays out the starting flow on a board
+            // that doesn't have one yet, then frames the view on the whitecard row.
+            function ensureFlow() {
+                if (stageFrames().length === 0) {
+                    const existing = canvas.getObjects();
+                    let origin = { x: 0, y: 0 };
+                    if (existing.length) {
+                        const bounds = existing.map(o => o.getBoundingRect(true));
+                        origin = {
+                            x: Math.min(...bounds.map(b => b.left)),
+                            y: Math.max(...bounds.map(b => b.top + b.height)) + ROW_GAP * 2
+                        };
+                    }
+                    canvas.add(new fabric.StageFrame({ frameKind: 'whitecard', left: origin.x, top: origin.y }));
+                    addFrame('comments', -1, 0);
+                    addFrame('wip', 0, 1);
+                    addFrame('delivered', 0, 0);
+                    addFrame('comments', 0, 0);
+                    sendFramesToBack();
+                    // The starting layout is the board's baseline, not an undoable step.
+                    currentState = JSON.stringify(serializeCanvas());
+                }
+                fitViewToFlow();
+            }
+
+            function fitViewToFlow() {
+                const wc = findFrame('whitecard');
+                if (!wc) return;
+                // Sync to the real container size first — the editor view may have only just
+                // been shown, and its deferred resize may not have run yet.
+                resizeCanvas();
+                const cw = canvas.getWidth(), ch = canvas.getHeight();
+                if (cw <= 0 || ch <= 0) return;
+                const spanW = FRAME_W * 2 + COL_GAP; // the whitecard plus the start of its comments
+                const zoom = Math.min(cw * 0.9 / spanW, ch * 0.8 / (FRAME_H * 1.6));
+                canvas.setViewportTransform([zoom, 0, 0, zoom, cw * 0.05 - wc.left * zoom, 90 - wc.top * zoom]);
+            }
+
+            // --- Flow overlay buttons (HTML, tracked over the canvas on every render) ---------
+            const flowOverlay = document.getElementById('flow-overlay');
+            let flowButtons = [];
+            let flowOverlayKey = '';
+            let flowUidSeq = 0;
+
+            function makeFlowButton(html, onClick, extraClass) {
+                const b = document.createElement('button');
+                b.className = 'flow-btn' + (extraClass ? ' ' + extraClass : '');
+                b.style.left = '0';
+                b.style.top = '0';
+                b.innerHTML = html;
+                b.addEventListener('mousedown', e => e.stopPropagation());
+                b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+                flowOverlay.appendChild(b);
+                return b;
+            }
+
+            function rebuildFlowOverlay() {
+                flowOverlay.innerHTML = '';
+                flowButtons = [];
+                const frames = stageFrames();
+                if (frames.length === 0) return;
+
+                frames.filter(f => f.frameKind === 'wip').forEach(f => {
+                    const delivered = findFrame('delivered', f.round);
+                    const isFinal = !!delivered && delivered.finalVersion === f.wipVersion;
+                    const el = makeFlowButton(
+                        isFinal ? '<i class="fa-solid fa-star"></i>Final' : '<i class="fa-regular fa-star"></i>Mark final',
+                        () => markFinal(f.round, f.wipVersion),
+                        isFinal ? 'is-final' : '');
+                    flowButtons.push({ el, x: f.left + f.width, y: f.top, align: 'right-above' });
+                });
+
+                new Set(frames.filter(f => f.frameKind === 'wip').map(f => f.round)).forEach(r => {
+                    const last = findFrame('wip', r, lastVersion(r));
+                    const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Version', () => addVersion(r));
+                    flowButtons.push({ el, x: last.left + last.width + COL_GAP * 0.25, y: last.top + last.height / 2, align: 'left-center' });
+                });
+
+                const anchor = findFrame('delivered', lastRound()) || findFrame('whitecard');
+                if (anchor) {
+                    const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Next round', addRound);
+                    flowButtons.push({ el, x: anchor.left, y: anchor.top + anchor.height + ROW_GAP / 2, align: 'left-center' });
+                }
+                positionFlowOverlay();
+            }
+
+            function positionFlowOverlay() {
+                const vpt = canvas.viewportTransform;
+                flowButtons.forEach(b => {
+                    const sx = b.x * vpt[0] + vpt[4];
+                    const sy = b.y * vpt[3] + vpt[5];
+                    const w = b.el.offsetWidth, h = b.el.offsetHeight;
+                    let left = sx, top = sy - h / 2;
+                    if (b.align === 'right-above') { left = sx - w; top = sy - h - 8; }
+                    b.el.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+                });
+            }
+
+            // Rebuild the buttons only when the set of frames changes (added, re-marked final,
+            // or replaced wholesale by an undo/load, which creates fresh objects); otherwise
+            // just move them to follow pan/zoom.
+            canvas.on('after:render', () => {
+                const key = stageFrames().map(f => {
+                    if (!f.__flowUid) f.__flowUid = ++flowUidSeq;
+                    return `${f.__flowUid}:${f.finalVersion}`;
+                }).join('|');
+                if (key !== flowOverlayKey) {
+                    flowOverlayKey = key;
+                    rebuildFlowOverlay();
+                } else {
+                    positionFlowOverlay();
                 }
             });
 
