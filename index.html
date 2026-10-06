@@ -334,7 +334,7 @@
         }
 
         .thumb-box {
-            aspect-ratio: 16 / 9;
+            aspect-ratio: 4 / 3;
             flex-shrink: 0;
             border-radius: 8px;
             overflow: hidden;
@@ -5139,7 +5139,7 @@
             // overlapping it along. The drawing tools click straight through frames. New versions go to the right of the last version in their row; a new round
             // goes below the lowest frame.
             // Frames live in the canvas JSON like everything else, so undo/save/load just work.
-            const FRAME_W = 1600, FRAME_H = 900, COL_GAP = 600, ROW_GAP = 700;
+            const FRAME_W = 1600, FRAME_H = 1200, COL_GAP = 600, ROW_GAP = 700;  // 4:3 frames
             const COMMENTS_W = FRAME_W * 2 + COL_GAP;
             const FRAME_LABEL_STRIP = 120; // height of the grabbable title area above each frame
             const FRAME_STYLE = {
@@ -5361,6 +5361,15 @@
                     sendFramesToBack();
                     // The starting layout is the board's baseline, not an undoable step.
                     currentState = JSON.stringify(serializeCanvas());
+                } else {
+                    // Boards made before frames went 4:3 have 16:9 (900-tall) frames — grow them
+                    // in place. The row gap leaves room, so nothing below gets overlapped.
+                    const old = stageFrames().filter(f => f.height === 900);
+                    if (old.length) {
+                        old.forEach(f => { f.set({ height: FRAME_H }); f.setCoords(); });
+                        canvas.requestRenderAll();
+                        currentState = JSON.stringify(serializeCanvas());
+                    }
                 }
                 // Only runs when a board is opened, so this is the "nothing changed yet" point.
                 markClean();
