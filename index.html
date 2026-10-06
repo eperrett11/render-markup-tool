@@ -433,6 +433,7 @@
             </div>
             <div id="app-modal-body" class="p-5 flex flex-col gap-4"></div>
             <div class="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-gray-800">
+                <button id="app-modal-secondary" class="hidden mr-auto h-8 px-3 rounded text-xs font-medium text-red-300 hover:bg-red-500/10 transition-colors"></button>
                 <button id="app-modal-cancel" class="h-8 px-3 rounded text-xs font-medium text-gray-300 hover:bg-gray-800 transition-colors">Cancel</button>
                 <button id="app-modal-confirm" class="h-8 px-3.5 rounded bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white transition-colors">Create</button>
             </div>
@@ -449,6 +450,13 @@
         </div>
         <div class="flex-1 flex justify-center overflow-hidden">
         <div class="toolbar-shell tool-scroll" id="main-toolbar">
+            <button id="btn-share" class="toolbar-btn toolbar-btn-primary" data-tooltip="Save this version">
+                <i class="fa-solid fa-floppy-disk"></i>
+                <span>Save</span>
+            </button>
+
+            <div class="toolbar-divider"></div>
+
             <label class="toolbar-btn toolbar-btn-primary" data-tooltip="Upload one or more images from your device">
                 <i class="fa-solid fa-cloud-arrow-up"></i>
                 <span>Upload</span>
@@ -457,10 +465,6 @@
             </label>
             <button id="btn-undo" class="toolbar-icon-btn" data-tooltip="Undo (Ctrl+Z)" disabled>
                 <i class="fa-solid fa-rotate-left"></i>
-            </button>
-            <button id="btn-share" class="toolbar-btn" data-tooltip="Save this version">
-                <i class="fa-solid fa-floppy-disk"></i>
-                <span>Save</span>
             </button>
             <button id="btn-history" class="toolbar-icon-btn" data-tooltip="Version history">
                 <i class="fa-solid fa-clock-rotate-left"></i>
@@ -903,12 +907,15 @@
             const appModalConfirm = document.getElementById('app-modal-confirm');
             const appModalCancel = document.getElementById('app-modal-cancel');
             const appModalClose = document.getElementById('app-modal-close');
+            const appModalSecondary = document.getElementById('app-modal-secondary');
 
             function closeModal() {
                 appModal.classList.add('hidden');
                 appModal.classList.remove('flex');
                 appModalBody.innerHTML = '';
                 appModalConfirm.onclick = null;
+                appModalSecondary.onclick = null;
+                appModalSecondary.classList.add('hidden');
             }
 
             // options: { title, confirmText, danger, bodyHtml | bodyBuilder(bodyEl), focusSelector, onConfirm(bodyEl) }
@@ -935,6 +942,12 @@
                     const result = await options.onConfirm(appModalBody);
                     if (result !== false) closeModal();
                 };
+                // Optional third action, shown on the far left (e.g. "Exit without saving")
+                if (options.secondaryText) {
+                    appModalSecondary.textContent = options.secondaryText;
+                    appModalSecondary.classList.remove('hidden');
+                    appModalSecondary.onclick = () => { closeModal(); options.onSecondary(); };
+                }
             }
 
             appModalCancel.addEventListener('click', closeModal);
@@ -964,7 +977,7 @@
 
                 const hint = document.createElement('span');
                 hint.className = 'text-[11px] text-gray-500';
-                hint.textContent = 'Each row becomes a shot (S010, S020, ...) — press Enter to add another.';
+                hint.textContent = 'Each row becomes a shot — press Enter to add another.';
 
                 function addRow(value) {
                     const row = document.createElement('div');
@@ -1292,7 +1305,21 @@
             }
 
             document.getElementById('btn-project-back').addEventListener('click', () => { showView('home'); renderHome(); });
-            document.getElementById('btn-editor-back').addEventListener('click', () => { showView('project'); renderProject(); });
+            document.getElementById('btn-editor-back').addEventListener('click', () => {
+                if (!hasUnsavedChanges()) { leaveEditor(); return; }
+                openModal({
+                    title: 'Unsaved changes',
+                    confirmText: 'Save & exit',
+                    secondaryText: 'Exit without saving',
+                    bodyHtml: '<p class="text-sm text-gray-300">This board has changes that haven’t been saved. Save them before you leave?</p>',
+                    onConfirm: async () => {
+                        const saved = await saveCurrentVersion();
+                        if (!saved) return false;
+                        leaveEditor();
+                    },
+                    onSecondary: leaveEditor
+                });
+            });
 
             async function openProject(id, name) {
                 appState.projectId = id;
@@ -1301,7 +1328,7 @@
                 await renderProject();
             }
 
-            // --- Project view: shots (S010, S020, ...) ------------------------------------------
+            // --- Project view: shots, listed in natural order of their names ----------------------
             const boardGrid = document.getElementById('board-grid');
             const boardEmpty = document.getElementById('board-empty');
             const projectTitle = document.getElementById('project-title');
@@ -1319,14 +1346,16 @@
                 const n = project.boards.length;
                 projectMeta.textContent = `${n} shot${n === 1 ? '' : 's'}`;
                 boardEmpty.classList.toggle('hidden', n > 0);
-                project.boards.forEach(b => {
+                // Shot names carry their own numbering (e.g. ..._S200_..., ..._S210_...), so sort
+                // by name with numeric-aware comparison rather than by creation order.
+                const byName = (a, b) => (a.label || '').localeCompare(b.label || '', undefined, { numeric: true, sensitivity: 'base' });
+                project.boards.slice().sort(byName).forEach(b => {
                     const card = document.createElement('div');
                     card.className = 'list-card';
                     card.innerHTML = `
                         <div class="thumb-box" style="width:min(300px, 45%);"><i class="fa-regular fa-image"></i></div>
                         <div class="flex-1 min-w-0 self-start pt-1">
-                            <div class="eyebrow">${escapeHtml(b.code)}</div>
-                            <div class="text-lg font-semibold text-gray-100 truncate mt-1">${escapeHtml(b.label || 'Untitled shot')}</div>
+                            <div class="text-lg font-semibold text-gray-100 truncate">${escapeHtml(b.label || 'Untitled shot')}</div>
                             <div class="text-xs text-gray-500 mt-1">${b.updatedAt ? 'Updated ' + formatTimestamp(b.updatedAt) : 'Not saved yet'}</div>
                         </div>
                         <div class="flex items-center gap-1 self-start">${actionButtonsHtml('board-rename-btn', 'board-delete-btn')}</div>`;
@@ -1377,7 +1406,7 @@
 
             function openRenameShotModal(b) {
                 openModal({
-                    title: `Rename ${b.code}`,
+                    title: 'Rename Shot',
                     confirmText: 'Save',
                     focusSelector: '#modal-shot-name',
                     bodyBuilder: (body) => {
@@ -1424,7 +1453,7 @@
                         p1.className = 'text-sm text-gray-300';
                         const strong = document.createElement('span');
                         strong.className = 'font-semibold text-white';
-                        strong.textContent = b.label ? `${b.code} — ${b.label}` : b.code;
+                        strong.textContent = b.label || 'Untitled shot';
                         p1.append('Delete “', strong, '” and all of its saved versions? This can’t be undone.');
                         body.appendChild(p1);
                     },
@@ -1449,13 +1478,37 @@
 
             function openBoard(b) {
                 appState.boardId = b.id;
-                appState.boardLabel = b.label ? `${b.code} — ${b.label}` : b.code;
+                appState.boardLabel = b.label || 'Untitled shot';
                 openBoardEditor();
             }
 
             // --- Editor: open/save the current shot's board -------------------------------------
             const editorBreadcrumb = document.getElementById('editor-breadcrumb');
             let currentBoardData = null;
+
+            // Unsaved-changes tracking: every edit goes through saveHistory() (or undo), which
+            // updates currentState; the board is "dirty" when that differs from the snapshot
+            // taken on open / last save. Panning and zooming don't touch currentState.
+            let lastSavedState = null;
+
+            function markClean() {
+                lastSavedState = currentState;
+            }
+
+            function hasUnsavedChanges() {
+                return appViews.editor.style.display !== 'none' && currentState !== lastSavedState;
+            }
+
+            function leaveEditor() {
+                showView('project');
+                renderProject();
+            }
+
+            window.addEventListener('beforeunload', (e) => {
+                if (!hasUnsavedChanges()) return;
+                e.preventDefault();
+                e.returnValue = '';
+            });
 
             async function loadBoard() {
                 return await storageGetJSON(`_board-${appState.boardId}.json`);
@@ -1508,9 +1561,9 @@
             async function saveCurrentVersion() {
                 if (!supabaseEnabled) {
                     showShareToast('Save is not configured yet — add your Supabase project config in index.html', true);
-                    return;
+                    return false;
                 }
-                if (!appState.boardId) return;
+                if (!appState.boardId) return false;
                 showShareToast('Saving…');
                 try {
                     const canvasJson = serializeCanvas();
@@ -1529,8 +1582,10 @@
 
                     appState.versionId = id;
                     currentState = JSON.stringify(canvasJson);
+                    markClean();
                     showShareToast('Saved');
                     renderHistoryPopup();
+                    return true;
                 } catch (err) {
                     console.error('Save failed:', err);
                     if (isStorageFullError(err)) {
@@ -1538,6 +1593,7 @@
                     } else {
                         showShareToast('Save failed — see console for details', true);
                     }
+                    return false;
                 }
             }
 
@@ -1572,6 +1628,7 @@
                                     canvas.renderAll();
                                     rebuildCalloutRegistry();
                                     currentState = JSON.stringify(data.canvasJson);
+                                    markClean();
                                     updateActionButtons();
                                     shareToast.classList.add('hidden');
                                     renderHistoryPopup();
@@ -5138,6 +5195,8 @@
                     // The starting layout is the board's baseline, not an undoable step.
                     currentState = JSON.stringify(serializeCanvas());
                 }
+                // Only runs when a board is opened, so this is the "nothing changed yet" point.
+                markClean();
                 fitViewToFlow();
             }
 
