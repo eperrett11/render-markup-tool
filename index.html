@@ -308,6 +308,13 @@
             color: #60a5fa;
         }
 
+        .project-list-frame {
+            border: 1px solid #1f2733;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.015);
+        }
+        .project-list-frame.tool-scroll::-webkit-scrollbar { width: 6px; }
+
         /* One row in the project list or a project's shot list: thumbnail + text + actions */
         .list-card {
             display: flex;
@@ -404,22 +411,32 @@
 
     <!-- Home: pick a project, or create a new one -->
     <div id="view-home">
-        <div class="flex-1 overflow-y-auto">
-            <div class="max-w-2xl mx-auto px-4 sm:px-6 pt-12 pb-20 flex flex-col items-center text-center">
+        <!-- Header stays put; only the project list frame below scrolls, so a long list
+             (20+ projects) doesn't push the search/sort controls off screen. -->
+        <div class="flex-1 min-h-0 flex flex-col items-center px-4 sm:px-6 pt-10 pb-8">
+            <div class="w-full max-w-2xl flex flex-col items-center text-center shrink-0">
                 <img src="logo.png" alt="" class="w-24 h-24 mb-2 select-none" draggable="false">
                 <div class="eyebrow">Render Markup Tool</div>
-                <h1 class="text-3xl font-semibold text-white mt-2 tracking-tight">Projects</h1>                <div class="flex items-center gap-2 mt-6">
+                <div class="w-full flex flex-wrap items-center gap-2 mt-6">
+                    <div class="relative flex-1 min-w-[180px]">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-500 pointer-events-none"></i>
+                        <input id="project-search" type="search" placeholder="Search projects" autocomplete="off" aria-label="Search projects"
+                            class="w-full bg-gray-900 text-xs text-gray-200 placeholder-gray-500 border border-gray-700 rounded-md pl-8 pr-3 py-2 outline-none focus:border-blue-500">
+                    </div>
                     <select id="project-sort" class="bg-gray-900 text-xs text-gray-300 border border-gray-700 rounded-md px-2.5 py-2 outline-none cursor-pointer" aria-label="Sort projects">
-                        <option value="recent">Recent</option>
+                        <option value="recent">Last updated</option>
                         <option value="name">Name (A–Z)</option>
-                        <option value="created">Date Created</option>
+                        <option value="created">Date created</option>
                     </select>
                     <button id="btn-new-project" class="toolbar-btn toolbar-btn-primary">
                         <i class="fa-solid fa-plus"></i><span>New Project</span>
                     </button>
                 </div>
-                <div id="project-grid" class="w-full flex flex-col gap-3 mt-10 text-left"></div>
-                <div id="project-empty" class="hidden text-gray-500 text-sm mt-10">No projects yet — click "New Project" to get started.</div>
+            </div>
+            <div class="project-list-frame tool-scroll w-full max-w-2xl mt-5 flex-1 min-h-0 overflow-y-auto">
+                <div id="project-grid" class="flex flex-col gap-2.5 p-3 text-left"></div>
+                <div id="project-empty" class="hidden text-gray-500 text-sm text-center py-10">No projects yet — click "New Project" to get started.</div>
+                <div id="project-no-match" class="hidden text-gray-500 text-sm text-center py-10">No projects match your search.</div>
             </div>
         </div>
     </div>
@@ -1157,13 +1174,33 @@
                         </div>
                         ${actionButtonsHtml('project-rename-btn', 'project-delete-btn')}
                         <i class="fa-solid fa-chevron-right text-gray-600 text-xs pr-1"></i>`;
+                    card.dataset.search = p.name.toLowerCase();
                     card.addEventListener('click', () => openProject(p.id, p.name));
                     card.querySelector('.project-rename-btn').addEventListener('click', (e) => { e.stopPropagation(); openRenameProjectModal(p); });
                     card.querySelector('.project-delete-btn').addEventListener('click', (e) => { e.stopPropagation(); openDeleteProjectModal(p); });
                     projectGrid.appendChild(card);
                     fillProjectCard(card, p);
                 });
+                applyProjectSearch();
             }
+
+            // Client-side filter over the already-rendered rows — no refetch per keystroke.
+            const projectSearch = document.getElementById('project-search');
+            const projectNoMatch = document.getElementById('project-no-match');
+
+            function applyProjectSearch() {
+                const q = projectSearch.value.trim().toLowerCase();
+                const cards = Array.from(projectGrid.children);
+                let shown = 0;
+                cards.forEach(card => {
+                    const match = !q || card.dataset.search.includes(q);
+                    card.style.display = match ? '' : 'none';
+                    if (match) shown++;
+                });
+                projectNoMatch.classList.toggle('hidden', !(q && cards.length && shown === 0));
+            }
+
+            projectSearch.addEventListener('input', applyProjectSearch);
 
             async function fillProjectCard(card, p) {
                 const detail = await storageGetJSON(`_project-${p.id}.json`).catch(() => null);
