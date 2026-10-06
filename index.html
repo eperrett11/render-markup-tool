@@ -5193,7 +5193,7 @@
                 frameLabel: function() {
                     switch (this.frameKind) {
                         case 'whitecard': return 'WHITECARD';
-                        case 'comments': return 'CLIENT COMMENTS';
+                        case 'comments': return `${this.round === -1 ? 'WHITECARD' : roundName(this.round)} · CLIENT COMMENTS`;
                         case 'wip': return `WIP · ${roundName(this.round)} · v${this.wipVersion}`;
                         case 'delivered': return `${roundName(this.round)} · DELIVERED`;
                     }
@@ -5596,8 +5596,7 @@
             }
 
             // Each client comments zone sits on a shared background band with the frame it
-            // belongs to (whitecard, or that round's delivered frame), with a dashed arrow from
-            // the frame into the comments. Drawn straight onto the canvas behind everything —
+            // belongs to (whitecard, or that round's delivered frame). Drawn straight onto the canvas behind everything —
             // not objects — so they follow frame drags and never get selected or saved.
             function drawRoundRect(ctx, x, y, w, h, r) {
                 ctx.beginPath();
@@ -5636,28 +5635,6 @@
                     ctx.lineWidth = 2;
                     ctx.strokeStyle = 'rgba(148,163,184,0.12)';
                     ctx.stroke();
-
-                    // Connector arrow: frame's right edge -> comments' left edge
-                    const ax = src.left + src.width + 40, ay = src.top + src.height / 2;
-                    const bx = c.left - 40, by = c.top + c.height / 2;
-                    if (bx - ax < 60) return;
-                    ctx.setLineDash([26, 18]);
-                    ctx.lineWidth = 6;
-                    ctx.lineCap = 'round';
-                    ctx.strokeStyle = '#6b7280';
-                    ctx.beginPath();
-                    ctx.moveTo(ax, ay);
-                    ctx.lineTo(bx - 30, by);
-                    ctx.stroke();
-                    ctx.setLineDash([]);
-                    const ang = Math.atan2(by - ay, bx - ax);
-                    ctx.fillStyle = '#6b7280';
-                    ctx.beginPath();
-                    ctx.moveTo(bx, by);
-                    ctx.lineTo(bx - 50 * Math.cos(ang - 0.45), by - 50 * Math.sin(ang - 0.45));
-                    ctx.lineTo(bx - 50 * Math.cos(ang + 0.45), by - 50 * Math.sin(ang + 0.45));
-                    ctx.closePath();
-                    ctx.fill();
                 });
                 ctx.restore();
             });
