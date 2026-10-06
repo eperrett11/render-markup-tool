@@ -465,6 +465,16 @@
     </div>
 
     <!-- Generic in-app dialog, used instead of native prompt()/confirm() popups -->
+    <div id="save-overlay" class="hidden fixed inset-0 z-[120] items-center justify-center bg-black/50 backdrop-blur-md">
+        <div class="flex flex-col items-center gap-4 bg-gray-950/90 border border-gray-700 rounded-xl shadow-2xl px-8 py-6 w-80">
+            <div id="save-overlay-text" class="text-sm font-semibold text-gray-100">Saving…</div>
+            <div class="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+                <div id="save-overlay-bar" class="h-full bg-blue-500 rounded-full" style="width:0%; transition: width 0.4s ease;"></div>
+            </div>
+            <div id="save-overlay-step" class="text-[11px] text-gray-500">Preparing…</div>
+        </div>
+    </div>
+
     <div id="app-modal" class="hidden fixed inset-0 z-[110] items-center justify-center bg-black/60 backdrop-blur-sm">
         <div class="bg-gray-950 border border-gray-700 rounded-lg shadow-2xl w-[90vw] max-w-md flex flex-col">
             <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
@@ -1652,29 +1662,93 @@
                     return false;
                 }
                 if (!appState.boardId) return false;
-                showShareToast('Saving…');
+                if (saveInFlight) return saveInFlight;
+                saveInFlight = runSave();
+                try { return await saveInFlight; } finally { saveInFlight = null; }
+            }
+
+            // Blocking overlay while saving, so nothing (Back, edits) can race the upload.
+            // Supabase uploads don't report byte progress, so the bar advances per step and
+            // creeps forward during the big canvas upload.
+            let saveInFlight = null;
+            const saveOverlay = document.getElementById('save-overlay');
+            const saveOverlayBar = document.getElementById('save-overlay-bar');
+            const saveOverlayStep = document.getElementById('save-overlay-step');
+            const saveOverlayText = document.getElementById('save-overlay-text');
+            let saveCreepTimer = null;
+
+            // Swallow keyboard shortcuts (delete, undo, etc.) while a save is running.
+            window.addEventListener('keydown', (e) => {
+                if (saveInFlight) { e.preventDefault(); e.stopImmediatePropagation(); }
+            }, true);
+
+            function setSaveProgress(pct, label, creepTo) {
+                clearInterval(saveCreepTimer);
+                let cur = pct;
+                saveOverlayBar.style.width = pct + '%';
+                if (label) saveOverlayStep.textContent = label;
+                if (creepTo) {
+                    saveCreepTimer = setInterval(() => {
+                        cur += (creepTo - cur) * 0.08;
+                        saveOverlayBar.style.width = cur.toFixed(1) + '%';
+                    }, 250);
+                }
+            }
+
+            function showSaveOverlay() {
+                saveOverlayText.textContent = 'Saving…';
+                saveOverlayBar.style.transition = 'none';
+                saveOverlayBar.style.width = '0%';
+                void saveOverlayBar.offsetWidth;
+                saveOverlayBar.style.transition = 'width 0.4s ease';
+                saveOverlay.classList.remove('hidden');
+                saveOverlay.classList.add('flex');
+                if (document.activeElement) document.activeElement.blur();
+            }
+
+            function hideSaveOverlay(delay) {
+                clearInterval(saveCreepTimer);
+                setTimeout(() => {
+                    saveOverlay.classList.add('hidden');
+                    saveOverlay.classList.remove('flex');
+                }, delay || 0);
+            }
+
+            async function runSave() {
+                showSaveOverlay();
+                setSaveProgress(3, 'Preparing…');
+                await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
                 try {
                     const canvasJson = serializeCanvas();
                     const thumb = makeThumbDataUrl();
                     const id = newId();
                     const savedAt = new Date().toISOString();
 
+                    setSaveProgress(10, 'Uploading board…', 70);
                     await storagePutJSON(`_version-${id}.json`, { canvasJson, savedAt });
-                    if (thumb) await storagePutJSON(`_thumb-${id}.json`, { thumb, savedAt });
+                    if (thumb) {
+                        setSaveProgress(72, 'Uploading thumbnail…', 80);
+                        await storagePutJSON(`_thumb-${id}.json`, { thumb, savedAt });
+                    }
 
+                    setSaveProgress(82, 'Updating history…', 90);
                     const board = await loadBoard();
                     board.versions.push({ id, savedAt });
                     await storagePutJSON(`_board-${appState.boardId}.json`, board);
                     currentBoardData = board;
+                    setSaveProgress(92, 'Updating shot list…', 98);
                     await updateShotMeta(appState.boardId, thumb ? id : null, savedAt);
 
                     appState.versionId = id;
                     currentState = JSON.stringify(canvasJson);
                     markClean();
-                    showShareToast('Saved');
+                    setSaveProgress(100, 'Done');
+                    saveOverlayText.textContent = 'Saved';
+                    hideSaveOverlay(400);
                     renderHistoryPopup();
                     return true;
                 } catch (err) {
+                    hideSaveOverlay();
                     console.error('Save failed:', err);
                     if (isStorageFullError(err)) {
                         showShareToast('Storage is full — delete some old versions to free up space, then try again.', true, 6000);
