@@ -1671,6 +1671,7 @@
             // Supabase uploads don't report byte progress, so the bar advances per step and
             // creeps forward during the big canvas upload.
             let saveInFlight = null;
+            const KEEP_VERSIONS = 2; // current save + one previous
             const saveOverlay = document.getElementById('save-overlay');
             const saveOverlayBar = document.getElementById('save-overlay-bar');
             const saveOverlayStep = document.getElementById('save-overlay-step');
@@ -1734,7 +1735,16 @@
                     setSaveProgress(82, 'Updating history…', 90);
                     const board = await loadBoard();
                     board.versions.push({ id, savedAt });
+                    // Keep only the current save and one before it — each save is a full copy of
+                    // the board (renders included), so older ones just eat storage.
+                    const pruned = board.versions.splice(0, Math.max(0, board.versions.length - KEEP_VERSIONS));
                     await storagePutJSON(`_board-${appState.boardId}.json`, board);
+                    if (pruned.length) {
+                        // Thumbs are only dropped when this save wrote a new one, since the shot
+                        // and project lists may still point at an older thumb otherwise.
+                        const keys = pruned.flatMap(v => thumb ? [`_version-${v.id}.json`, `_thumb-${v.id}.json`] : [`_version-${v.id}.json`]);
+                        storageRemove(keys).catch(err => console.error('Pruning old versions failed:', err));
+                    }
                     currentBoardData = board;
                     setSaveProgress(92, 'Updating shot list…', 98);
                     await updateShotMeta(appState.boardId, thumb ? id : null, savedAt);
