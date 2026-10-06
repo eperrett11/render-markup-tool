@@ -5595,6 +5595,73 @@
                 });
             }
 
+            // Each client comments zone sits on a shared background band with the frame it
+            // belongs to (whitecard, or that round's delivered frame), with a dashed arrow from
+            // the frame into the comments. Drawn straight onto the canvas behind everything —
+            // not objects — so they follow frame drags and never get selected or saved.
+            function drawRoundRect(ctx, x, y, w, h, r) {
+                ctx.beginPath();
+                ctx.moveTo(x + r, y);
+                ctx.arcTo(x + w, y, x + w, y + h, r);
+                ctx.arcTo(x + w, y + h, x, y + h, r);
+                ctx.arcTo(x, y + h, x, y, r);
+                ctx.arcTo(x, y, x + w, y, r);
+                ctx.closePath();
+            }
+
+            canvas.on('before:render', (opt) => {
+                const frames = stageFrames();
+                const pairs = frames.filter(f => f.frameKind === 'comments').map(c => {
+                    const src = c.round === -1
+                        ? frames.find(f => f.frameKind === 'whitecard')
+                        : frames.find(f => f.frameKind === 'delivered' && f.round === c.round);
+                    return src ? [src, c] : null;
+                }).filter(Boolean);
+                if (!pairs.length) return;
+
+                const ctx = opt.ctx;
+                const v = canvas.viewportTransform;
+                ctx.save();
+                ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+                const PAD = 90;
+                pairs.forEach(([src, c]) => {
+                    // Band
+                    const x1 = Math.min(src.left, c.left) - PAD;
+                    const y1 = Math.min(src.top, c.top) - FRAME_LABEL_STRIP - PAD;
+                    const x2 = Math.max(src.left + src.width, c.left + c.width) + PAD;
+                    const y2 = Math.max(src.top + src.height, c.top + c.height) + PAD;
+                    drawRoundRect(ctx, x1, y1, x2 - x1, y2 - y1, 48);
+                    ctx.fillStyle = 'rgba(148,163,184,0.045)';
+                    ctx.fill();
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = 'rgba(148,163,184,0.12)';
+                    ctx.stroke();
+
+                    // Connector arrow: frame's right edge -> comments' left edge
+                    const ax = src.left + src.width + 40, ay = src.top + src.height / 2;
+                    const bx = c.left - 40, by = c.top + c.height / 2;
+                    if (bx - ax < 60) return;
+                    ctx.setLineDash([26, 18]);
+                    ctx.lineWidth = 6;
+                    ctx.lineCap = 'round';
+                    ctx.strokeStyle = '#6b7280';
+                    ctx.beginPath();
+                    ctx.moveTo(ax, ay);
+                    ctx.lineTo(bx - 30, by);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    const ang = Math.atan2(by - ay, bx - ax);
+                    ctx.fillStyle = '#6b7280';
+                    ctx.beginPath();
+                    ctx.moveTo(bx, by);
+                    ctx.lineTo(bx - 50 * Math.cos(ang - 0.45), by - 50 * Math.sin(ang - 0.45));
+                    ctx.lineTo(bx - 50 * Math.cos(ang + 0.45), by - 50 * Math.sin(ang + 0.45));
+                    ctx.closePath();
+                    ctx.fill();
+                });
+                ctx.restore();
+            });
+
             // Rebuild the buttons only when the set of frames changes (added, or replaced
             // wholesale by an undo/load, which creates fresh objects); otherwise just move them
             // to follow pan/zoom and frame drags.
