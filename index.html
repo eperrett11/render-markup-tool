@@ -447,11 +447,15 @@
 
     <div id="view-editor">
     <header class="h-16 bg-gray-950/95 backdrop-blur-sm border-b border-gray-800 flex items-center px-4 gap-3 z-20 shadow-xl shrink-0">
-        <div class="flex items-center gap-2 shrink-0">
-            <button id="btn-editor-back" class="toolbar-icon-btn" data-tooltip="Back to board">
+        <div class="flex items-center gap-3 shrink-0 min-w-0 max-w-[30%]">
+            <button id="btn-editor-back" class="toolbar-btn toolbar-btn-outline shrink-0" data-tooltip="Back to shots">
                 <i class="fa-solid fa-arrow-left"></i>
+                <span>Back</span>
             </button>
-            <span id="editor-breadcrumb" class="text-xs text-gray-400 whitespace-nowrap hidden lg:inline"></span>
+            <div id="editor-breadcrumb" class="hidden lg:flex flex-col min-w-0 leading-tight">
+                <span id="editor-breadcrumb-project" class="text-xs text-gray-400 truncate"></span>
+                <span id="editor-breadcrumb-shot" class="text-base font-semibold text-white truncate"></span>
+            </div>
         </div>
         <div class="flex-1 flex justify-center overflow-hidden">
         <div class="toolbar-shell tool-scroll" id="main-toolbar">
@@ -1521,7 +1525,9 @@
 
             async function openBoardEditor() {
                 showView('editor');
-                editorBreadcrumb.textContent = `${appState.projectName} / ${appState.boardLabel}`;
+                document.getElementById('editor-breadcrumb-project').textContent = appState.projectName;
+                document.getElementById('editor-breadcrumb-shot').textContent = appState.boardLabel;
+                editorBreadcrumb.title = `${appState.projectName} / ${appState.boardLabel}`;
 
                 canvas.clear();
                 calloutRegistry = {};
