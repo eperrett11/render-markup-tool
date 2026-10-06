@@ -1409,9 +1409,9 @@
                     secondaryText: 'Exit without saving',
                     bodyHtml: '<p class="text-sm text-gray-300">This board has changes that haven’t been saved. Save them before you leave?</p>',
                     onConfirm: async () => {
-                        const saved = await saveCurrentVersion();
-                        if (!saved) return false;
-                        leaveEditor();
+                        // On failure the prompt closes so the error message is visible; the
+                        // board stays open with its changes.
+                        if (await saveCurrentVersion()) leaveEditor();
                     },
                     onSecondary: leaveEditor
                 });
@@ -1720,8 +1720,16 @@
                 setSaveProgress(3, 'Preparing…');
                 await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
                 try {
+                    setSaveProgress(5, 'Optimizing images…');
+                    await shrinkCanvasImages();
                     const canvasJson = serializeCanvas();
                     const thumb = makeThumbDataUrl();
+                    const sizeMB = JSON.stringify(canvasJson).length / 1e6;
+                    if (sizeMB > 48) {
+                        const e = new Error(`Board is ${Math.round(sizeMB)} MB`);
+                        e.tooBig = true;
+                        throw e;
+                    }
                     const id = newId();
                     const savedAt = new Date().toISOString();
 
@@ -1760,7 +1768,9 @@
                 } catch (err) {
                     hideSaveOverlay();
                     console.error('Save failed:', err);
-                    if (isStorageFullError(err)) {
+                    if (err && err.tooBig) {
+                        showShareToast(`${err.message} — too large to save (limit ~50 MB). Remove an image or two and try again.`, true, 8000);
+                    } else if (isStorageFullError(err)) {
                         showShareToast('Storage is full — delete some old versions to free up space, then try again.', true, 6000);
                     } else {
                         showShareToast('Save failed — see console for details', true);
@@ -3167,6 +3177,71 @@
             // used to shrink each image to a grid cell's size when laying out a multi-page
             // PDF import. `options.skipOffset` suppresses the usual staggered-position nudge
             // (grid placement already gives each image its own distinct spot).
+            // Renders are embedded straight into each save, so a full-res 5000px JPEG alone can be
+            // 20+ MB and push a board past the storage upload limit. Anything over the cap gets
+            // scaled down and re-encoded as a JPEG — plenty for markup review. Images with real
+            // transparency are kept as PNG. Returns the original data URL when no change is needed.
+            const IMAGE_MAX_EDGE = 4000;
+            const IMAGE_MAX_BYTES = 3e6; // data-URL length; smaller images are left untouched
+            function loadImageEl(src) {
+                return new Promise((resolve, reject) => {
+                    const el = new Image();
+                    el.onload = () => resolve(el);
+                    el.onerror = reject;
+                    el.src = src;
+                });
+            }
+            function shrinkImageEl(el, srcLength) {
+                const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+                if (!w || !h) return null;
+                const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(w, h));
+                if (scale === 1 && srcLength <= IMAGE_MAX_BYTES) return null;
+                const c = document.createElement('canvas');
+                c.width = Math.round(w * scale);
+                c.height = Math.round(h * scale);
+                const ctx = c.getContext('2d');
+                ctx.drawImage(el, 0, 0, c.width, c.height);
+                let hasAlpha = false;
+                try {
+                    const px = ctx.getImageData(0, 0, c.width, c.height).data;
+                    for (let i = 3; i < px.length; i += 4 * 7) { if (px[i] < 250) { hasAlpha = true; break; } }
+                } catch (e) { /* tainted canvas — treat as opaque */ }
+                const out = hasAlpha ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9);
+                return out.length < srcLength ? out : null;
+            }
+            async function shrinkDataUrl(dataUrl) {
+                if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) return dataUrl;
+                try {
+                    const el = await loadImageEl(dataUrl);
+                    return shrinkImageEl(el, dataUrl.length) || dataUrl;
+                } catch (e) {
+                    return dataUrl;
+                }
+            }
+            // Same treatment for images already sitting on a board (added before the cap existed).
+            // Swaps the element in place and adjusts scale so nothing moves or changes size.
+            async function shrinkCanvasImages() {
+                const imgs = canvas.getObjects().filter(o => o.type === 'image');
+                let changed = false;
+                for (const img of imgs) {
+                    const el = img.getElement();
+                    const src = el && el.src;
+                    if (!src || !src.startsWith('data:image')) continue;
+                    const out = shrinkImageEl(el, src.length);
+                    if (!out) continue;
+                    const newEl = await loadImageEl(out);
+                    const oldW = img.width, oldH = img.height;
+                    const center = img.getCenterPoint();
+                    img.setElement(newEl, { width: newEl.naturalWidth, height: newEl.naturalHeight });
+                    img.set({ scaleX: img.scaleX * oldW / img.width, scaleY: img.scaleY * oldH / img.height });
+                    img.setPositionByOrigin(center, 'center', 'center');
+                    img.setCoords();
+                    changed = true;
+                }
+                if (changed) canvas.requestRenderAll();
+                return changed;
+            }
+
             function addImageToCanvas(dataUrl, fileName, dropPointer, counter, options = {}) {
                 const cWidth = canvas.getWidth();
                 const cHeight = canvas.getHeight();
@@ -3252,7 +3327,7 @@
                 };
 
                 // Set source AFTER defining onload to prevent caching race conditions
-                imgElement.src = dataUrl;
+                shrinkDataUrl(dataUrl).then(url => { imgElement.src = url; });
             }
 
             // Reusable function to handle file loading (used by both input and drop)
