@@ -404,6 +404,8 @@
             transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
         }
         .flow-btn:hover { color: #fff; border-color: #3b82f6; }
+        .flow-btn.flow-lock-btn { padding: 6px 8px; font-size: 12px; }
+        .flow-btn.flow-lock-btn.is-unlocked { color: #fbbf24; border-color: #b45309; }
         .history-item.current { color: #60a5fa; }
     </style>
 </head>
@@ -2638,7 +2640,7 @@
 
                 // Update selected object(s) color — text-like objects are excluded since their
                 // color now comes exclusively from the Text/Background popover above.
-                const activeObjects = canvas.getActiveObjects();
+                const activeObjects = canvas.getActiveObjects().filter(o => o.type !== 'stageFrame');
                 if (activeObjects.length) {
                     activeObjects.forEach(obj => {
                         if (obj.calloutId || obj.type === 'i-text' || obj.type === 'textbox') {
@@ -2744,7 +2746,7 @@
                 canvas.freeDrawingBrush.width = currentWidth;
 
                 // Update selected object(s) line width
-                const activeObjects = canvas.getActiveObjects();
+                const activeObjects = canvas.getActiveObjects().filter(o => o.type !== 'stageFrame');
                 if (activeObjects.length) {
                     activeObjects.forEach(obj => {
                         if (obj.type === 'group') {
@@ -2824,7 +2826,7 @@
                 currentOpacity = Math.min(1, Math.max(0, parseFloat(value)));
                 opacitySlider.value = currentOpacity;
                 opacityNumber.value = currentOpacity;
-                const activeObjects = canvas.getActiveObjects();
+                const activeObjects = canvas.getActiveObjects().filter(o => o.type !== 'stageFrame');
                 if (activeObjects.length) {
                     activeObjects.forEach(obj => {
                         // The visible card background is the frame behind the box, not the box
@@ -2873,7 +2875,7 @@
             // actually has.
             function syncToolbarFromSelection() {
                 const obj = canvas.getActiveObjects()[0];
-                if (!obj) return;
+                if (!obj || obj.type === 'stageFrame') return;
 
                 const isText = obj.type === 'i-text' || obj.type === 'textbox';
                 const groupLine = obj.type === 'group' ? obj.getObjects().find(o => o.type === 'line') : null;
@@ -5036,9 +5038,9 @@
             });
 
             // --- Stage flow: Whitecard -> WIP -> delivered -> client comments, per round -----
-            // Each stage is a frame on the canvas. In Select mode you drag a frame directly and
-            // everything overlapping it comes along; the drawing tools click straight through
-            // frames. New versions go to the right of the last version in their row; a new round
+            // Each stage is a frame on the canvas. Frames are locked by default; selecting one in
+            // Select mode shows a lock toggle, and once unlocked, dragging it brings everything
+            // overlapping it along. The drawing tools click straight through frames. New versions go to the right of the last version in their row; a new round
             // goes below the lowest frame.
             // Frames live in the canvas JSON like everything else, so undo/save/load just work.
             const FRAME_W = 1600, FRAME_H = 900, COL_GAP = 600, ROW_GAP = 700;
@@ -5063,6 +5065,11 @@
                 lockScalingX: true,
                 lockScalingY: true,
                 lockRotation: true,
+                // Locked in place by default so the flow stays a standard layout; the lock icon
+                // shown above a selected frame unlocks it for dragging. Not saved — every frame
+                // is locked again whenever the board is opened.
+                lockMovementX: true,
+                lockMovementY: true,
                 objectCaching: false, // the label is drawn outside the rect's own bounds
                 hoverCursor: 'default',
 
@@ -5271,7 +5278,12 @@
                 // been shown, and its deferred resize may not have run yet.
                 resizeCanvas();
                 const cw = canvas.getWidth(), ch = canvas.getHeight();
-                if (cw <= 0 || ch <= 0) return;
+                if (cw <= 1 || ch <= 1) {
+                    // Not laid out yet (e.g. the tab is in the background) — try again on the next
+                    // frame, as long as we're still on the board.
+                    if (appViews.editor.style.display !== 'none') requestAnimationFrame(fitViewToFlow);
+                    return;
+                }
                 // Show some empty room to the left of the main column, the whitecard, and the
                 // start of its comments zone.
                 const leftRoom = COL_GAP;
@@ -5400,7 +5412,7 @@
 
             canvas.on('mouse:down', (opt) => {
                 const t = opt.target;
-                frameDrag = (t && t.type === 'stageFrame' && currentMode === 'select')
+                frameDrag = (t && t.type === 'stageFrame' && !t.lockMovementX && currentMode === 'select')
                     ? { frame: t, left: t.left, top: t.top, movers: collectFrameMovers(t) }
                     : null;
             });
@@ -5415,6 +5427,28 @@
                 flowButtons = [];
                 const frames = stageFrames();
                 if (frames.length === 0) return;
+
+                // Lock toggle above each frame's top-right corner — shown while the frame is
+                // selected, and kept visible while it's unlocked so it's obvious it can move.
+                frames.forEach(f => {
+                    const el = makeFlowButton('', () => {
+                        const unlock = f.lockMovementX;
+                        f.set({ lockMovementX: !unlock, lockMovementY: !unlock });
+                        canvas.requestRenderAll();
+                    });
+                    el.classList.add('flow-lock-btn');
+                    flowButtons.push({
+                        el, x: () => f.left + f.width, y: () => f.top, align: 'right-above',
+                        visible: () => canvas.getActiveObject() === f || !f.lockMovementX,
+                        render: () => {
+                            const locked = f.lockMovementX;
+                            el.classList.toggle('is-unlocked', !locked);
+                            el.setAttribute('aria-label', locked ? 'Unlock frame to move it' : 'Lock frame in place');
+                            el.title = locked ? 'Locked — click to unlock and move' : 'Unlocked — click to lock';
+                            return locked ? '<i class="fa-solid fa-lock"></i>' : '<i class="fa-solid fa-lock-open"></i>';
+                        }
+                    });
+                });
 
                 new Set(frames.filter(f => f.frameKind === 'wip').map(f => f.round)).forEach(r => {
                     const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Version', () => addVersion(r));
@@ -5432,6 +5466,15 @@
             function positionFlowOverlay() {
                 const vpt = canvas.viewportTransform;
                 flowButtons.forEach(b => {
+                    if (b.visible) {
+                        const show = b.visible();
+                        b.el.style.display = show ? '' : 'none';
+                        if (!show) return;
+                    }
+                    if (b.render) {
+                        const html = b.render();
+                        if (html !== b.lastHtml) { b.el.innerHTML = html; b.lastHtml = html; }
+                    }
                     const sx = b.x() * vpt[0] + vpt[4];
                     const sy = b.y() * vpt[3] + vpt[5];
                     const w = b.el.offsetWidth, h = b.el.offsetHeight;
