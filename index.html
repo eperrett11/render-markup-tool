@@ -4304,7 +4304,8 @@
             const INTERNAL_PASTE_OFFSET = 24;
 
             function cloneFabricObject(obj) {
-                return new Promise(resolve => obj.clone(resolve));
+                // Pass our custom props so a pasted image keeps its file name (and callout bits stay intact).
+                return new Promise(resolve => obj.clone(resolve, SERIALIZE_PROPS));
             }
 
             function copySelectionToInternalClipboard() {
@@ -4338,6 +4339,10 @@
                     if (item.kind === 'object') {
                         const cloned = await cloneFabricObject(item.obj);
                         cloned.set({ left: item.obj.left + dx, top: item.obj.top + dy, evented: true });
+                        if (cloned.type === 'image' && cloned.sourceFileName) {
+                            // "Kitchen.jpg" -> "Kitchen (copy).jpg"
+                            cloned.sourceFileName = cloned.sourceFileName.replace(/(\.[^.]+)?$/, ' (copy)$1');
+                        }
                         canvas.add(cloned);
 
                         // Keep a pasted image below annotations, same rule addImageToCanvas uses
@@ -4404,6 +4409,7 @@
                     canvas.setActiveObject(new fabric.ActiveSelection(pasted, { canvas }));
                 }
                 canvas.requestRenderAll();
+                updateImageNameLabel();
                 saveHistory();
             }
 
