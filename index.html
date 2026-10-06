@@ -1021,9 +1021,9 @@
 
                 const hint = document.createElement('span');
                 hint.className = 'text-[11px] text-gray-500';
-                hint.textContent = 'Each row becomes a shot — press Enter to add another.';
+                hint.textContent = 'Each row becomes a shot — press Enter to add another, or paste a list (one per line).';
 
-                function addRow(value) {
+                function addRow(value, afterRow) {
                     const row = document.createElement('div');
                     row.className = 'flex items-center gap-2';
                     const input = document.createElement('input');
@@ -1041,14 +1041,36 @@
                         e.preventDefault();
                         addRow('').querySelector('input').focus();
                     });
+                    // Pasting a multi-line list fills this row and adds one row per extra line.
+                    input.addEventListener('paste', (e) => {
+                        const text = (e.clipboardData || window.clipboardData).getData('text');
+                        const lines = text.split(/\r?\n|\t/).map(s => s.trim()).filter(Boolean);
+                        if (lines.length < 2) return;
+                        e.preventDefault();
+                        const before = input.value.slice(0, input.selectionStart);
+                        const after = input.value.slice(input.selectionEnd);
+                        input.value = (before + lines[0]).trim();
+                        let anchor = row;
+                        lines.slice(1).forEach((line, i) => {
+                            const isLast = i === lines.length - 2;
+                            const newRow = addRow((line + (isLast ? after : '')).trim(), anchor);
+                            anchor = newRow;
+                        });
+                        // Drop leftover empty rows so the list stays clean.
+                        rows.querySelectorAll('.shot-row-input').forEach(inp => {
+                            if (!inp.value.trim() && rows.children.length > 1) inp.parentElement.remove();
+                        });
+                        anchor.querySelector('input').focus();
+                    });
                     row.appendChild(input);
                     row.appendChild(removeBtn);
-                    rows.appendChild(row);
+                    if (afterRow && afterRow.nextSibling) rows.insertBefore(row, afterRow.nextSibling);
+                    else rows.appendChild(row);
                     return row;
                 }
                 addBtn.addEventListener('click', () => addRow('').querySelector('input').focus());
 
-                (initialLabels.length ? initialLabels : ['']).forEach(addRow);
+                (initialLabels.length ? initialLabels : ['']).forEach(v => addRow(v));
 
                 wrapper.appendChild(labelEl);
                 wrapper.appendChild(rows);
