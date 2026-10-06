@@ -847,8 +847,63 @@
             // parts and keep the tip anchor correct, and the image's original file name.
             const SERIALIZE_PROPS = ['calloutId', 'calloutRole', 'tipX', 'tipY', 'sourceFileName'];
 
+            // Renders already uploaded as their own files (see uploadCanvasImages) are written
+            // as links instead of embedded image data, so a saved board stays a few KB no matter
+            // how many renders it holds.
             function serializeCanvas() {
-                return canvas.toJSON(SERIALIZE_PROPS);
+                const json = canvas.toJSON(SERIALIZE_PROPS);
+                linkUploadedImages(json.objects);
+                return json;
+            }
+
+            function linkUploadedImages(objects) {
+                (objects || []).forEach(o => {
+                    if (o.type === 'image' && uploadedImageUrls.has(o.src)) {
+                        o.src = uploadedImageUrls.get(o.src);
+                        o.crossOrigin = 'anonymous'; // lets thumbnails/compare read its pixels
+                    }
+                    if (o.objects) linkUploadedImages(o.objects);
+                });
+            }
+
+            // --- Render files ------------------------------------------------------------------
+            // Each render is stored once as img/<sha256>.<ext>. Named by its content, so the same
+            // image (a pasted copy, another shot, a re-save) is never uploaded twice, and the file
+            // never changes — browsers can cache it forever. Old saves that still embed their
+            // images load fine; they convert on their next save.
+            const uploadedImageUrls = new Map(); // embedded data URL -> public file URL
+
+            function allCanvasImages(objects = canvas.getObjects(), out = []) {
+                objects.forEach(o => {
+                    if (o.type === 'image') out.push(o);
+                    else if (o._objects) allCanvasImages(o._objects, out);
+                });
+                return out;
+            }
+
+            async function uploadImageData(dataUrl) {
+                if (uploadedImageUrls.has(dataUrl)) return uploadedImageUrls.get(dataUrl);
+                const blob = await (await fetch(dataUrl)).blob();
+                const hashBuf = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+                const hash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+                const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
+                const key = `img/${hash}.${ext}`;
+                const { error } = await supabaseClient.storage.from(SUPABASE_BUCKET)
+                    .upload(key, blob, { contentType: blob.type || 'image/jpeg', upsert: false, cacheControl: '31536000' });
+                // "Already exists" just means this exact render was uploaded before.
+                if (error && String(error.statusCode) !== '409' && !/exist|duplicate/i.test(error.message || '')) throw error;
+                const url = supabaseClient.storage.from(SUPABASE_BUCKET).getPublicUrl(key).data.publicUrl;
+                uploadedImageUrls.set(dataUrl, url);
+                return url;
+            }
+
+            async function uploadCanvasImages(onProgress) {
+                const pending = [...new Set(allCanvasImages().map(img => img.getSrc())
+                    .filter(src => src && src.startsWith('data:') && !uploadedImageUrls.has(src)))];
+                for (let i = 0; i < pending.length; i++) {
+                    onProgress && onProgress(i, pending.length);
+                    await uploadImageData(pending[i]);
+                }
             }
 
             function saveHistory() {
@@ -1718,10 +1773,16 @@
             async function runSave() {
                 showSaveOverlay();
                 setSaveProgress(3, 'Preparing…');
-                await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+                // Give the overlay a moment to paint. Not requestAnimationFrame — that never fires
+                // in a background tab, which would stall the save if you switch tabs.
+                await new Promise(r => setTimeout(r, 50));
                 try {
                     setSaveProgress(5, 'Optimizing images…');
                     await shrinkCanvasImages();
+                    await uploadCanvasImages((i, n) => {
+                        const from = 10 + 60 * i / n, to = 10 + 60 * (i + 1) / n;
+                        setSaveProgress(from, n > 1 ? `Uploading render ${i + 1} of ${n}…` : 'Uploading render…', to);
+                    });
                     const canvasJson = serializeCanvas();
                     const thumb = makeThumbDataUrl();
                     const sizeMB = JSON.stringify(canvasJson).length / 1e6;
@@ -1733,7 +1794,7 @@
                     const id = newId();
                     const savedAt = new Date().toISOString();
 
-                    setSaveProgress(10, 'Uploading board…', 70);
+                    setSaveProgress(70, 'Saving board…', 72);
                     await storagePutJSON(`_version-${id}.json`, { canvasJson, savedAt });
                     if (thumb) {
                         setSaveProgress(72, 'Uploading thumbnail…', 80);
