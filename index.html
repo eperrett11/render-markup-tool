@@ -5301,6 +5301,13 @@
                 comments:  { stroke: '#4b5563', fill: 'rgba(255,255,255,0.012)', dash: [28, 18] }
             };
 
+            // Restudy whitecards (a camera re-explored after comments) reuse wipVersion as their
+            // number; the original whitecard and its comments are 0 (older boards) or 1.
+            function whitecardNum(v) { return v || 1; }
+            function whitecardName(v) {
+                return whitecardNum(v) === 1 ? 'WHITECARD' : 'WHITECARD ' + String(whitecardNum(v)).padStart(2, '0');
+            }
+
             function roundName(round) {
                 return round === 0 ? 'ICD' : 'R' + String(round).padStart(2, '0');
             }
@@ -5338,8 +5345,8 @@
 
                 frameLabel: function() {
                     switch (this.frameKind) {
-                        case 'whitecard': return 'WHITECARD';
-                        case 'comments': return `${this.round === -1 ? 'WHITECARD' : roundName(this.round)} · CLIENT COMMENTS`;
+                        case 'whitecard': return whitecardName(this.wipVersion);
+                        case 'comments': return `${this.round === -1 ? whitecardName(this.wipVersion) : roundName(this.round)} · CLIENT COMMENTS`;
                         case 'wip': return `WIP · ${roundName(this.round)} · v${this.wipVersion}`;
                         case 'delivered': return `${roundName(this.round)} · DELIVERED`;
                     }
@@ -5445,9 +5452,27 @@
                 panToFrame(frame);
             }
 
+            function firstWhitecard() {
+                return stageFrames().filter(f => f.frameKind === 'whitecard').sort((a, b) => a.top - b.top)[0];
+            }
+
+            // Another whitecard pass (e.g. the client wants a camera restudied), added below the
+            // lowest frame with its own comments zone, like a round.
+            function addWhitecard() {
+                const n = stageFrames().reduce((m, f) => f.frameKind === 'whitecard' ? Math.max(m, whitecardNum(f.wipVersion)) : m, 0) + 1;
+                const wc = firstWhitecard();
+                const x = wc ? wc.left : 0;
+                const top = flowBottom() + ROW_GAP;
+                const frame = addFrame('whitecard', -1, n, x, top);
+                addFrame('comments', -1, n, x + FRAME_W + COL_GAP, top);
+                sendFramesToBack();
+                saveHistory();
+                panToFrame(frame);
+            }
+
             function addRound() {
                 const r = lastRound() + 1;
-                const wc = findFrame('whitecard');
+                const wc = firstWhitecard();
                 const x = wc ? wc.left : 0;
                 const wipTop = flowBottom() + ROW_GAP;
                 const deliveredTop = wipTop + FRAME_H + ROW_GAP;
@@ -5529,7 +5554,7 @@
             }
 
             function fitViewToFlow() {
-                const wc = findFrame('whitecard');
+                const wc = firstWhitecard();
                 if (!wc) return;
                 // Sync to the real container size first — the editor view may have only just
                 // been shown, and its deferred resize may not have run yet.
@@ -5716,6 +5741,8 @@
                 const el = makeFlowButton('<i class="fa-solid fa-plus"></i>Next round', addRound);
                 const lowest = () => stageFrames().filter(f => f.frameKind !== 'comments').sort((a, b) => (b.top + b.height) - (a.top + a.height))[0];
                 flowButtons.push({ el, x: () => lowest().left, y: () => lowest().top + lowest().height + 160, align: 'left-center' });
+                const wcEl = makeFlowButton('<i class="fa-solid fa-plus"></i>Whitecard restudy', addWhitecard);
+                flowButtons.push({ el: wcEl, x: () => lowest().left, y: () => lowest().top + lowest().height + 160, align: 'left-center', offsetPx: () => el.offsetWidth + 12 });
 
                 positionFlowOverlay();
             }
@@ -5735,7 +5762,7 @@
                     const sx = b.x() * vpt[0] + vpt[4];
                     const sy = b.y() * vpt[3] + vpt[5];
                     const w = b.el.offsetWidth, h = b.el.offsetHeight;
-                    let left = sx, top = sy - h / 2;
+                    let left = sx + (b.offsetPx ? b.offsetPx() : 0), top = sy - h / 2;
                     if (b.align === 'right-above') { left = sx - w; top = sy - h - 8; }
                     b.el.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
                 });
@@ -5758,7 +5785,7 @@
                 const frames = stageFrames();
                 const pairs = frames.filter(f => f.frameKind === 'comments').map(c => {
                     const src = c.round === -1
-                        ? frames.find(f => f.frameKind === 'whitecard')
+                        ? frames.find(f => f.frameKind === 'whitecard' && whitecardNum(f.wipVersion) === whitecardNum(c.wipVersion))
                         : frames.find(f => f.frameKind === 'delivered' && f.round === c.round);
                     return src ? [src, c] : null;
                 }).filter(Boolean);
