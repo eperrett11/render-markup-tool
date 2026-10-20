@@ -1677,6 +1677,7 @@
 
                 canvas.clear();
                 calloutRegistry = {};
+                lastCalloutId = undefined;
                 internalClipboard = null;
                 history = [];
                 currentState = null;
@@ -1934,6 +1935,10 @@
             // round-trip, so anything read across an undo needs its own tag.
             let calloutRegistry = {};
             let calloutCounter = 0;
+            // The callout most recently made, selected or restyled — new callouts copy its look.
+            // undefined = nothing touched yet this session (fall back to the board's newest
+            // callout); null = styles were pre-set from the popover with nothing selected.
+            let lastCalloutId;
             let calloutStickies = []; // callouts dragged along with an underlying image
 
             // Hand-rolled drag state for grabbing a callout's leader (moves everything rigidly)
@@ -2719,6 +2724,24 @@
                 entry.frame.set({ fill: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})` });
             }
 
+            function calloutStyleSource() {
+                const ok = e => e && e.leg1 && e.frame && e.box;
+                if (lastCalloutId && ok(calloutRegistry[lastCalloutId])) return calloutRegistry[lastCalloutId];
+                if (lastCalloutId === undefined) {
+                    const boxes = canvas.getObjects().filter(o => o.calloutRole === 'box' && ok(calloutRegistry[o.calloutId]));
+                    if (boxes.length) return calloutRegistry[boxes[boxes.length - 1].calloutId];
+                }
+                return null;
+            }
+
+            canvas.on('selection:created', noteCalloutTouched);
+            canvas.on('selection:updated', noteCalloutTouched);
+            canvas.on('object:modified', noteCalloutTouched);
+            function noteCalloutTouched(opt) {
+                const o = (opt && (opt.target || (opt.selected && opt.selected[0]))) || canvas.getActiveObject();
+                if (o && o.calloutId && calloutRegistry[o.calloutId]) lastCalloutId = o.calloutId;
+            }
+
             function syncCalloutFontColor(calloutId, hex) {
                 const entry = calloutRegistry[calloutId];
                 if (!entry || !entry.box) return;
@@ -2901,7 +2924,7 @@
                 const hex = e.target.value;
                 const obj = textLikeSelection();
                 if (obj && obj.calloutId) syncCalloutColor(obj.calloutId, hex);
-                else if (!obj) currentCalloutLineColor = hex; // pre-set for the next callout placed
+                else if (!obj) { currentCalloutLineColor = hex; lastCalloutId = null; } // pre-set for the next callout placed
                 canvas.renderAll();
             });
             calloutLineColorInput.addEventListener('change', () => {
@@ -4016,13 +4039,16 @@
                     // they're meant to read as a clean note against any photo — pick the callout
                     // back up and use the color picker to customize it like any other object.
                     isDrawingCallout = true;
+                    const styleSrc = calloutStyleSource();
+                    const lineColor = styleSrc ? styleSrc.leg1.stroke : currentCalloutLineColor;
+                    const lineWidth = styleSrc ? styleSrc.leg1.strokeWidth : currentWidth;
                     calloutLine = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], {
-                        strokeWidth: currentWidth, fill: currentCalloutLineColor, stroke: currentCalloutLineColor,
+                        strokeWidth: lineWidth, fill: lineColor, stroke: lineColor,
                         originX: 'center', originY: 'center', selectable: false, evented: false,
                         tipX: pointer.x, tipY: pointer.y // fixed anchor, read via tipX/tipY (see calloutRegistry note)
                     });
                     calloutHead = new fabric.Triangle({
-                        width: arrowHeadSize(currentWidth), height: arrowHeadSize(currentWidth), fill: currentCalloutLineColor,
+                        width: arrowHeadSize(lineWidth), height: arrowHeadSize(lineWidth), fill: lineColor,
                         left: pointer.x, top: pointer.y, originX: 'center', originY: 'center',
                         selectable: false, evented: false, angle: 90
                     });
@@ -4303,21 +4329,28 @@
                         // below by updateCalloutGeometry once the box exists.
                         canvas.remove(calloutLine);
 
-                        const id = 'callout_' + (calloutCounter++);
+                        // Counter restarts at 0 on every page load, so skip ids already on the board.
+                        let id;
+                        do { id = 'callout_' + (calloutCounter++); } while (calloutRegistry[id]);
                         const tip = { x: calloutLine.tipX, y: calloutLine.tipY };
+                        // Start from the look of the last callout touched (line, border, card,
+                        // text color/font/size, box width) — or the popover presets / defaults.
+                        const src = calloutStyleSource();
+                        const lineColor = src ? src.leg1.stroke : currentCalloutLineColor;
+                        const lineWidth = src ? src.leg1.strokeWidth : currentWidth;
 
                         // perPixelTargetFind so a click has to actually land on the thin leader
                         // line itself — otherwise its diagonal bounding box (much bigger than the
                         // visible stroke) swallows clicks meant for the arrowhead at the tip.
                         const leg1 = new fabric.Line([tip.x, tip.y, tip.x, tip.y], {
-                            stroke: currentCalloutLineColor, strokeWidth: currentWidth, fill: currentCalloutLineColor,
+                            stroke: lineColor, strokeWidth: lineWidth, fill: lineColor,
                             strokeUniform: true, // see Rect above — keeps stroke weight scale-independent
                             selectable: false, evented: false, strokeLineCap: 'round',
                             perPixelTargetFind: true,
                             calloutId: id, calloutRole: 'leg1', tipX: tip.x, tipY: tip.y
                         });
                         const leg2 = new fabric.Line([tip.x, tip.y, tip.x, tip.y], {
-                            stroke: currentCalloutLineColor, strokeWidth: currentWidth, fill: currentCalloutLineColor,
+                            stroke: lineColor, strokeWidth: lineWidth, fill: lineColor,
                             strokeUniform: true,
                             selectable: false, evented: false, strokeLineCap: 'round',
                             perPixelTargetFind: true,
@@ -4329,8 +4362,8 @@
                         // text itself, so the border reads as a clean box outline, not a text stroke.
                         const frame = new fabric.Rect({
                             left: dropX, top: dropY, width: 10, height: 10,
-                            fill: `rgba(255, 255, 255, ${currentOpacity})`,
-                            stroke: currentCalloutLineColor, strokeWidth: currentWidth,
+                            fill: src ? src.frame.fill : `rgba(255, 255, 255, ${currentOpacity})`,
+                            stroke: src ? src.frame.stroke : lineColor, strokeWidth: lineWidth,
                             strokeUniform: true, // see Rect (shape tool) above
                             rx: 8, ry: 8, selectable: false, evented: false,
                             calloutId: id, calloutRole: 'frame'
@@ -4340,8 +4373,14 @@
                             left: dropX, top: dropY, originX: 'center', originY: 'center',
                             // Text always matches the stroke/leader/arrowhead color (see
                             // syncCalloutColor) — both start at CALLOUT_DEFAULT_COLOR here.
-                            width: 190, fontFamily: currentFont, fill: CALLOUT_DEFAULT_COLOR, fontWeight: '600',
-                            fontSize: currentFontSize,
+                            width: src ? src.box.width : 190,
+                            scaleX: src ? src.box.scaleX : 1, scaleY: src ? src.box.scaleY : 1,
+                            fontFamily: src ? src.box.fontFamily : currentFont,
+                            fill: src ? src.box.fill : CALLOUT_DEFAULT_COLOR,
+                            fontWeight: src ? src.box.fontWeight : '600',
+                            fontStyle: src ? src.box.fontStyle : 'normal',
+                            textAlign: src ? src.box.textAlign : 'left',
+                            fontSize: src ? src.box.fontSize : currentFontSize,
                             calloutId: id, calloutRole: 'box',
                             // Selection border/corners draw padded out to CALLOUT_PADDING so they
                             // hug the visible card, not just the tight text — purely cosmetic,
@@ -4362,6 +4401,7 @@
                         // hits the (bigger, easier-to-grab) head first, not the leader.
                         canvas.bringToFront(calloutHead);
                         calloutRegistry[id] = { leg1, leg2, head: calloutHead, frame, box: calloutBox };
+                        lastCalloutId = id;
                         updateCalloutGeometry(calloutRegistry[id]);
                         if (clickedImage) {
                             // Auto-parked against an edge of an image — re-stack every callout on
