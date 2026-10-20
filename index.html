@@ -813,7 +813,7 @@
                 height: canvasContainer.clientHeight || Math.max(window.innerHeight - 64, 1),
                 preserveObjectStacking: true, // Ensure objects stay in selected z-index order
                 fireMiddleClick: true, // Enable middle mouse interaction for panning
-                targetFindTolerance: 4, // A little forgiveness for perPixelTargetFind hit tests (callout legs)
+                targetFindTolerance: 6, // A little forgiveness for perPixelTargetFind hit tests (lines, arrows, callout legs)
                 // Fabric's own default is the four-way "move" cursor over any draggable object —
                 // keep the plain arrow instead, everywhere except the few spots (like the callout
                 // arrowhead) that explicitly opt into 'move' via their own hoverCursor.
@@ -2680,6 +2680,7 @@
                     if (!calloutRegistry[obj.calloutId]) calloutRegistry[obj.calloutId] = {};
                     calloutRegistry[obj.calloutId][obj.calloutRole] = obj;
                 });
+                if (currentMode === 'select') applySelectableInteractivity();
             }
 
             // Leader/arrowhead/border color — the shared "Color" swatch. Background fill and
@@ -3729,6 +3730,15 @@
 
             function applySelectableInteractivity() {
                 canvas.forEachObject(o => {
+                    // Thin things (callout leaders, arrows, lines, freehand strokes) only count as
+                    // clicked when the click lands on the stroke itself, not anywhere in their
+                    // bounding box — otherwise a diagonal leader's box steals clicks meant for
+                    // whatever overlaps it. Not saved with the board, so it's re-applied here.
+                    if (o.calloutRole === 'leg1' || o.calloutRole === 'leg2' || o.calloutRole === 'head' ||
+                        o.type === 'line' || o.type === 'path' ||
+                        (o.type === 'group' && o.getObjects().some(c => c.type === 'line'))) {
+                        o.perPixelTargetFind = true;
+                    }
                     if (o.calloutRole === 'leg1' || o.calloutRole === 'leg2') {
                         // Clickable (grabbing the leader moves the whole callout) but never
                         // independently fabric-selectable — that was letting the leader legs
@@ -3744,7 +3754,7 @@
                         // is what repositions where the arrow is pointing.
                         o.selectable = false;
                         o.evented = true;
-                        o.hoverCursor = 'move';
+                        o.hoverCursor = 'pointer';
                         return;
                     }
                     if (o.calloutRole === 'frame') {
@@ -3971,6 +3981,7 @@
                         if (entry) {
                             isDraggingCalloutTip = true;
                             tipDragEntry = entry;
+                            canvas.setCursor('pointer');
                             canvas.discardActiveObject();
                             canvas.selection = false;
                             canvas.requestRenderAll();
@@ -4158,6 +4169,7 @@
                 }
 
                 if (isDraggingCalloutTip && tipDragEntry) {
+                    canvas.setCursor('pointer');
                     tipDragEntry.leg1.tipX = pointer.x;
                     tipDragEntry.leg1.tipY = pointer.y;
                     updateCalloutGeometry(tipDragEntry);
