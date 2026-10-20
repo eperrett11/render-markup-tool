@@ -6008,7 +6008,8 @@
             // Reads the callouts and text boxes inside a comments zone and turns them into a
             // checklist of action items. With a Gemini API key (pasted once, kept only in this
             // browser) the comments are rewritten into clean tasks by AI; without one they're
-            // split into items as written. Only the comment TEXT is sent, never the renders.
+            // split into items as written. Images in the zone (the client's marked-up PDF/JPEG
+            // pages, email screenshots) are read by Gemini too — those need the key.
             // The checklist lives on the comments frame itself, so it saves/undoes with the board.
             const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash'];
             const GEMINI_KEY_STORE = 'rmt_gemini_key';
@@ -6021,6 +6022,13 @@
             function commentsInFrame(frame) {
                 const out = [];
                 canvas.getObjects().forEach(o => {
+                    if (o.type === 'image') {
+                        const c = o.getCenterPoint();
+                        const src = o.getSrc();
+                        if (!src || !pointInFrame(frame, c.x, c.y)) return;
+                        out.push({ image: o, y: c.y, x: c.x, key: 'img|' + src, src: { x: c.x, y: c.y } });
+                        return;
+                    }
                     const isCallout = o.calloutRole === 'box';
                     const isText = !o.calloutId && (o.type === 'textbox' || o.type === 'i-text');
                     if (!isCallout && !isText) return;
@@ -6044,6 +6052,22 @@
                     .filter(t => t.length > 2);
             }
 
+            // A client markup page as JPEG base64, big enough that small handwritten/red notes
+            // stay legible.
+            function imageForAi(img) {
+                const el = img.getElement();
+                const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+                const s = Math.min(1, 2400 / Math.max(w, h));
+                const c = document.createElement('canvas');
+                c.width = Math.round(w * s);
+                c.height = Math.round(h * s);
+                const ctx = c.getContext('2d');
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(0, 0, c.width, c.height);
+                ctx.drawImage(el, 0, 0, c.width, c.height);
+                return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+            }
+
             async function geminiTasks(comments, apiKey) {
                 const prompt = [
                     'You turn client feedback on architectural 3D renders into a to-do checklist for the 3D artist.',
@@ -6052,13 +6076,23 @@
                     '- Write each task as a short, direct instruction (e.g. "Change facade cladding to grey aluminium panels (Alucobond or similar)").',
                     '- Keep every specific detail: materials, products, colors, names, numbers, locations.',
                     '- Do not invent tasks. Skip pure praise or approvals that need no action.',
+                    '- Some comments are images: pages of the client\'s marked-up renders/drawings or screenshots of their emails.',
+                    '  Read every note on them (typed, handwritten, red-lined, callout boxes) and turn each request into tasks.',
+                    '  Use what the note points at in the image for context (e.g. "the wall behind the planter").',
+                    '  Ignore title blocks, logos, file names, page numbers and sheet info.',
                     '- "source" is the number of the comment the task came from.',
                     '',
                     'Comments:',
-                    ...comments.map((c, i) => `${i + 1}. ${c.text.replace(/\s+/g, ' ')}`)
+                    ...comments.map((c, i) => c.image ? `${i + 1}. [image — attached below as comment ${i + 1}]` : `${i + 1}. ${c.text.replace(/\s+/g, ' ')}`)
                 ].join('\n');
+                const parts = [{ text: prompt }];
+                comments.forEach((c, i) => {
+                    if (!c.image) return;
+                    parts.push({ text: `Comment ${i + 1} (image):` });
+                    parts.push({ inline_data: { mime_type: 'image/jpeg', data: imageForAi(c.image) } });
+                });
                 const body = JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
+                    contents: [{ parts }],
                     generationConfig: {
                         temperature: 0.2,
                         responseMimeType: 'application/json',
@@ -6111,7 +6145,7 @@
                             const p = document.createElement('p');
                             p.className = 'text-sm text-gray-400 leading-relaxed';
                             p.innerHTML = 'Paste a key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="text-blue-400 hover:underline">Google AI Studio</a>. ' +
-                                'It\'s stored only in this browser. Only the comment text is sent to Gemini — never the renders.';
+                                'It\'s stored only in this browser. Gemini gets the comment text and any images inside the client comments area — nothing else on the board.';
                             const input = document.createElement('input');
                             input.type = 'password';
                             input.id = 'modal-gemini-key';
@@ -6141,7 +6175,7 @@
                 const list = frame.checklist || { items: [], scanned: [] };
                 const fresh = commentsInFrame(frame).filter(c => !list.scanned.includes(c.key));
                 if (!fresh.length) {
-                    showShareToast(list.scanned.length ? 'No new comments since the last scan' : 'No comments in this area yet — add callouts or text first', !list.scanned.length);
+                    showShareToast(list.scanned.length ? 'No new comments since the last scan' : 'No comments in this area yet — add callouts, text or the client\'s markup images first', !list.scanned.length);
                     return;
                 }
                 let key = safeLocalGet(GEMINI_KEY_STORE, '');
@@ -6150,25 +6184,33 @@
                     if (key === null) return;
                 }
                 checklistBusy = true;
-                let tasks;
+                let tasks, aiUsed = false;
                 try {
                     if (key) {
-                        showShareToast('Reading comments…');
+                        showShareToast(fresh.some(c => c.image) ? 'Reading comments and markups…' : 'Reading comments…', false, 60000);
                         try {
                             tasks = await geminiTasks(fresh, key);
+                            aiUsed = true;
                         } catch (err) {
                             console.error('Gemini checklist failed:', err);
                             const why = err.status === 400 || err.status === 403 ? 'key was rejected' : err.status === 429 ? 'free quota is used up for now' : 'request failed';
                             showShareToast(`AI ${why} — split the comments as written instead`, true, 6000);
                         }
                     }
-                    if (!tasks) tasks = fresh.flatMap(c => splitCommentIntoTasks(c.text).map(text => ({ text, comment: c })));
+                    let read = fresh;
+                    if (!tasks) {
+                        // Images can't be read without AI — leave them unscanned for next time.
+                        read = fresh.filter(c => !c.image);
+                        if (read.length < fresh.length) showShareToast('Reading images needs a Gemini key — click the key icon to add one', true, 6000);
+                        if (!read.length) return;
+                        tasks = read.flatMap(c => splitCommentIntoTasks(c.text).map(text => ({ text, comment: c })));
+                    }
                     tasks.forEach(t => list.items.push({ id: newId(), text: t.text, done: false, src: t.comment && t.comment.src }));
-                    fresh.forEach(c => list.scanned.push(c.key));
+                    read.forEach(c => list.scanned.push(c.key));
                     frame.checklist = list;
                     saveHistory();
                     rebuildFlowOverlay();
-                    if (key && tasks.length) showShareToast(`Added ${tasks.length} item${tasks.length === 1 ? '' : 's'}`);
+                    if (aiUsed) showShareToast(tasks.length ? `Added ${tasks.length} item${tasks.length === 1 ? '' : 's'}` : 'No action items found in the new comments');
                 } finally {
                     checklistBusy = false;
                 }
