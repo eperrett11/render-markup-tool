@@ -1495,6 +1495,36 @@
                 await storageRemove(keys);
             }
 
+            // Deleting a project or shot asks for the admin password, so nobody wipes work by
+            // accident. Only a salted SHA-256 of it is in this (public) file. It's a guard
+            // against slips, not real security — there are no accounts behind it.
+            const ADMIN_PASSWORD_HASH = '6b6590df014ff30405f655bd2391a81eb0432e33a79e4793795e15c749fa0fef';
+
+            function appendAdminPasswordField(body) {
+                const label = document.createElement('label');
+                label.className = 'flex flex-col gap-1.5 mt-4';
+                const span = document.createElement('span');
+                span.className = 'modal-label';
+                span.textContent = 'Admin password';
+                const input = document.createElement('input');
+                input.type = 'password';
+                input.id = 'modal-admin-password';
+                input.className = 'modal-input';
+                input.autocomplete = 'off';
+                input.addEventListener('keydown', e => { if (e.key === 'Enter') appModalConfirm.click(); });
+                label.append(span, input);
+                body.appendChild(label);
+            }
+
+            async function adminPasswordOk(body) {
+                const value = body.querySelector('#modal-admin-password').value;
+                const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('rmt-admin:' + value));
+                const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+                if (hex === ADMIN_PASSWORD_HASH) return true;
+                showShareToast(value ? 'Wrong admin password' : 'Enter the admin password to delete', true);
+                return false;
+            }
+
             function openDeleteProjectModal(p) {
                 openModal({
                     title: 'Delete Project',
@@ -1508,8 +1538,11 @@
                         strong.textContent = p.name;
                         p1.append('Delete “', strong, '” and all of its shots? This can’t be undone.');
                         body.appendChild(p1);
+                        appendAdminPasswordField(body);
                     },
-                    onConfirm: async () => {
+                    focusSelector: '#modal-admin-password',
+                    onConfirm: async (body) => {
+                        if (!(await adminPasswordOk(body))) return false;
                         showShareToast('Deleting…');
                         try {
                             await deleteProjectCascade(p.id);
@@ -1676,8 +1709,11 @@
                         strong.textContent = b.label || 'Untitled shot';
                         p1.append('Delete “', strong, '” and all of its saved versions? This can’t be undone.');
                         body.appendChild(p1);
+                        appendAdminPasswordField(body);
                     },
-                    onConfirm: async () => {
+                    focusSelector: '#modal-admin-password',
+                    onConfirm: async (body) => {
+                        if (!(await adminPasswordOk(body))) return false;
                         showShareToast('Deleting…');
                         try {
                             await deleteBoardFiles(b.id);
