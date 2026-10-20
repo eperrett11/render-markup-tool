@@ -424,7 +424,7 @@
             padding: 36px 40px;
             box-sizing: border-box;
         }
-        .cl-head { display: flex; align-items: center; gap: 18px; margin-bottom: 24px; }
+        .cl-head { display: flex; align-items: center; gap: 18px; margin-bottom: 24px; cursor: move; }
         .cl-title { font-weight: 600; font-size: 44px; color: #9ca3af; letter-spacing: 0.02em; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .cl-count { font-size: 36px; color: #6b7280; }
         .cl-icon-btn { background: none; border: 0; color: #9ca3af; font-size: 38px; padding: 10px 14px; border-radius: 10px; cursor: pointer; }
@@ -6014,6 +6014,29 @@
             const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash'];
             const GEMINI_KEY_STORE = 'rmt_gemini_key';
             const CHECKLIST_GAP = 140; // canvas units between the comments zone and its card
+            const CHECKLIST_W = 1300;  // matches .cl-panel width
+            const CHECKLIST_LEFT_ROOM = 1000; // clear of callout notes parked left of a WIP frame
+
+            // The work row these comments feed into: the next whitecard/WIP frame below them in
+            // the main column. The checklist sits to its left, where the artist is working.
+            function checklistAnchor(frame) {
+                const below = stageFrames().filter(f => (f.frameKind === 'wip' || f.frameKind === 'whitecard') && f.top > frame.top + 1);
+                if (!below.length) return null;
+                const top = Math.min(...below.map(f => f.top));
+                return below.filter(f => Math.abs(f.top - top) < 1).sort((a, b) => a.left - b.left)[0];
+            }
+
+            // Where the card goes: an offset from its anchor, kept in the checklist once dragged
+            // so it rides along when rows shift (e.g. a whitecard restudy is inserted).
+            function checklistPlacement(frame) {
+                const list = frame.checklist;
+                const anchor = checklistAnchor(frame);
+                const kind = anchor ? 'next' : 'self';
+                const base = anchor || frame;
+                const def = anchor ? { x: -(CHECKLIST_W + CHECKLIST_LEFT_ROOM), y: 0 } : { x: frame.width + CHECKLIST_GAP, y: 0 };
+                const off = list.offset && list.offset.kind === kind ? list.offset : def;
+                return { base, kind, off };
+            }
 
             function checklistTitle(f) {
                 return f.round === -1 ? whitecardName(f.wipVersion) : roundName(f.round);
@@ -6254,6 +6277,7 @@
                     return;
                 }
                 const list = frame.checklist;
+                const place = () => checklistPlacement(frame);
                 const panel = document.createElement('div');
                 panel.className = 'cl-panel';
                 // The panel sits over the canvas — keep keys/pastes/clicks from reaching the
@@ -6299,6 +6323,26 @@
                         });
                     }));
                 panel.appendChild(head);
+
+                // Drag the card by its header
+                head.addEventListener('mousedown', e => {
+                    if (e.button !== 0 || e.target.closest('button')) return;
+                    e.preventDefault();
+                    const p = place();
+                    const start = { mx: e.clientX, my: e.clientY, x: p.off.x, y: p.off.y };
+                    const move = ev => {
+                        const z = canvas.getZoom();
+                        list.offset = { kind: p.kind, x: start.x + (ev.clientX - start.mx) / z, y: start.y + (ev.clientY - start.my) / z };
+                        positionFlowOverlay();
+                    };
+                    const up = () => {
+                        window.removeEventListener('mousemove', move);
+                        window.removeEventListener('mouseup', up);
+                        if (list.offset && (list.offset.x !== start.x || list.offset.y !== start.y)) saveHistory();
+                    };
+                    window.addEventListener('mousemove', move);
+                    window.addEventListener('mouseup', up);
+                });
 
                 if (!list.items.length) {
                     const empty = document.createElement('div');
@@ -6361,7 +6405,7 @@
                 panel.appendChild(add);
 
                 flowOverlay.appendChild(panel);
-                flowButtons.push({ el: panel, x: at.x, y: at.y, align: 'scaled' });
+                flowButtons.push({ el: panel, x: () => { const p = place(); return p.base.left + p.off.x; }, y: () => { const p = place(); return p.base.top + p.off.y; }, align: 'scaled' });
             }
 
             // Rebuild the buttons only when the set of frames changes (added, or replaced
