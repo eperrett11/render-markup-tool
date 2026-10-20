@@ -6078,7 +6078,9 @@
             // split into items as written. Images in the zone (the client's marked-up PDF/JPEG
             // pages, email screenshots) are read by Gemini too — those need the key.
             // The checklist lives on the comments frame itself, so it saves/undoes with the board.
-            const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash'];
+            // Tried in order. The -latest aliases follow Google's current models, so this doesn't
+            // go stale when a version is retired (gemini-2.5-flash already has been).
+            const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-flash-lite-latest'];
             const GEMINI_KEY_STORE = 'rmt_gemini_key';
             const CHECKLIST_GAP = 140; // canvas units between the comments zone and its card
             const CHECKLIST_W = 1300;  // matches .cl-panel width
@@ -6196,18 +6198,29 @@
                         }
                     }
                 });
+                // Gemini regularly answers 503 "overloaded" under load — retry with a short backoff,
+                // then move on to the next model. A bad key or used-up quota stops right away.
+                const wait = ms => new Promise((resolve, reject) => {
+                    const t = setTimeout(resolve, ms);
+                    signal && signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+                });
                 let lastErr;
                 for (const model of GEMINI_MODELS) {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-                        body, signal
-                    });
-                    if (res.status === 404) { lastErr = new Error(`Model ${model} not found`); continue; }
-                    const data = await res.json().catch(() => ({}));
+                    let res, data;
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        if (attempt) await wait(1500 * attempt);
+                        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+                            body, signal
+                        });
+                        data = await res.json().catch(() => ({}));
+                        if (![500, 503, 504].includes(res.status)) break;
+                    }
                     if (!res.ok) {
                         const e = new Error((data.error && data.error.message) || `Gemini error ${res.status}`);
                         e.status = res.status;
+                        if ([404, 500, 503, 504].includes(res.status)) { lastErr = e; continue; }
                         throw e;
                     }
                     const part = data.candidates && data.candidates[0] && data.candidates[0].content &&
@@ -6297,7 +6310,7 @@
                     if (key === null) return;
                 }
                 checklistBusy = true;
-                let tasks, aiUsed = false;
+                let tasks, aiUsed = false, aiError = null;
                 try {
                     if (key) {
                         aiAbort = new AbortController();
@@ -6308,13 +6321,21 @@
                         } catch (err) {
                             if (err.name === 'AbortError') { showShareToast('Checklist cancelled'); return; }
                             console.error('Gemini checklist failed:', err);
-                            const why = err.status === 400 || err.status === 403 ? 'key was rejected' : err.status === 429 ? 'free quota is used up for now' : 'request failed';
-                            showShareToast(`AI ${why} — split the comments as written instead`, true, 6000);
+                            aiError = err.status === 400 || err.status === 401 || err.status === 403 ? 'Gemini rejected the key — check it with the key icon'
+                                : err.status === 429 ? 'Gemini free quota is used up for now — try again later'
+                                : [500, 503, 504].includes(err.status) ? 'Gemini is overloaded right now — try again in a minute'
+                                : `Gemini request failed (${err.message})`;
                         }
                     }
                     let read = fresh;
+                    if (!tasks && aiError) {
+                        // AI was meant to run but couldn't — say why and leave everything unscanned
+                        // so a retry picks it all up, rather than a half-done no-AI list.
+                        showShareToast(aiError, true, 8000);
+                        return;
+                    }
                     if (!tasks) {
-                        // Images can't be read without AI — leave them unscanned for next time.
+                        // No key: images can't be read — leave them unscanned for next time.
                         read = fresh.filter(c => !c.image);
                         if (read.length < fresh.length) showShareToast('Reading images needs a Gemini key — click the key icon to add one', true, 6000);
                         if (!read.length) return;
