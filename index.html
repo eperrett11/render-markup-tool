@@ -426,6 +426,7 @@
         }
         .cl-head { display: flex; align-items: center; gap: 18px; margin-bottom: 24px; cursor: move; }
         .cl-title { font-weight: 600; font-size: 44px; color: #9ca3af; letter-spacing: 0.02em; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cl-sub { font-size: 32px; font-weight: 500; color: #6b7280; letter-spacing: 0; margin-top: 4px; }
         .cl-count { font-size: 36px; color: #6b7280; }
         .cl-icon-btn { background: none; border: 0; color: #9ca3af; font-size: 38px; padding: 10px 14px; border-radius: 10px; cursor: pointer; }
         .cl-icon-btn:hover { color: #fff; background: rgba(255,255,255,0.08); }
@@ -6260,7 +6261,7 @@
 
             function checklistAsText(frame) {
                 const items = (frame.checklist && frame.checklist.items) || [];
-                return [`${checklistTitle(frame)} — client comments`, ...items.map(i => `${i.done ? '☑' : '☐'} ${i.text}`)].join('\n');
+                return [`Client comments checklist — ${checklistTitle(frame)}`, ...items.map(i => `${i.done ? '☑' : '☐'} ${i.text}`)].join('\n');
             }
 
             function changeChecklist(frame, fn) {
@@ -6292,7 +6293,13 @@
                 head.className = 'cl-head';
                 const title = document.createElement('div');
                 title.className = 'cl-title';
-                title.textContent = `CHECKLIST · ${checklistTitle(frame)}`;
+                // Labelled as the client's list so it's never mistaken for internal notes
+                const titleMain = document.createElement('div');
+                titleMain.textContent = 'CLIENT COMMENTS CHECKLIST';
+                const titleSub = document.createElement('div');
+                titleSub.className = 'cl-sub';
+                titleSub.textContent = `From ${checklistTitle(frame)} client comments`;
+                title.append(titleMain, titleSub);
                 const count = document.createElement('div');
                 count.className = 'cl-count';
                 count.textContent = `${list.items.filter(i => i.done).length}/${list.items.length}`;
