@@ -2115,6 +2115,7 @@
             // adds no real space around the text. To get an actual bled, breathing-room card, the
             // frame is sized as the text's tight bounding box PLUS this margin on every side.
             const CALLOUT_PADDING = 16;
+            const CALLOUT_MIN_WIDTH = 420; // client comments run long - start wide, not tall and skinny
 
             // New callouts default to white outline/leader/arrowhead regardless of the shared
             // color picker — they read as a clean note against a photo. Still fully customizable
@@ -2475,7 +2476,7 @@
             // headroom and this silently fell back to left/right every time.)
             function computeOffImagePosition(imgBounds, refX, refY) {
                 const margin = 40; // wiggle room between the image edge and the card
-                const frameWidthEstimate = 190 + CALLOUT_PADDING * 2;
+                const frameWidthEstimate = CALLOUT_MIN_WIDTH + CALLOUT_PADDING * 2;
                 const frameHeightEstimate = 60; // rough single-line default text + padding
                 const halfFrameWidth = frameWidthEstimate / 2;
                 const halfFrameHeight = frameHeightEstimate / 2;
@@ -4385,7 +4386,7 @@
                             left: dropX, top: dropY, originX: 'center', originY: 'center',
                             // Text always matches the stroke/leader/arrowhead color (see
                             // syncCalloutColor) — both start at CALLOUT_DEFAULT_COLOR here.
-                            width: src ? src.box.width : 190,
+                            width: Math.max(CALLOUT_MIN_WIDTH, src ? src.box.width : 0),
                             scaleX: src ? src.box.scaleX : 1, scaleY: src ? src.box.scaleY : 1,
                             fontFamily: src ? src.box.fontFamily : currentFont,
                             fill: src ? src.box.fill : CALLOUT_DEFAULT_COLOR,
