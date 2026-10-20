@@ -5321,6 +5321,7 @@
             // goes below the lowest frame.
             // Frames live in the canvas JSON like everything else, so undo/save/load just work.
             const FRAME_W = 1600, FRAME_H = 1200, COL_GAP = 600, ROW_GAP = 700;  // 4:3 frames
+            const VERSION_GAP = 1400; // between WIP versions — room for callout notes on both sides
             const COMMENTS_W = FRAME_W * 2 + COL_GAP;
             const FRAME_LABEL_STRIP = 120; // height of the grabbable title area above each frame
             const FRAME_STYLE = {
@@ -5475,7 +5476,7 @@
             function addVersion(round) {
                 const last = findFrame('wip', round, lastVersion(round));
                 if (!last) return;
-                const frame = addFrame('wip', round, last.wipVersion + 1, last.left + FRAME_W + COL_GAP, last.top);
+                const frame = addFrame('wip', round, last.wipVersion + 1, last.left + FRAME_W + VERSION_GAP, last.top);
                 sendFramesToBack();
                 saveHistory();
                 panToFrame(frame);
@@ -5582,10 +5583,35 @@
                         canvas.requestRenderAll();
                         currentState = JSON.stringify(serializeCanvas());
                     }
+                    if (widenVersionGaps()) currentState = JSON.stringify(serializeCanvas());
                 }
                 // Only runs when a board is opened, so this is the "nothing changed yet" point.
                 markClean();
                 fitViewToFlow();
+            }
+
+            // Boards laid out with the old, tighter version spacing get their WIP versions spread
+            // out to VERSION_GAP — each later version moves right along with its renders,
+            // markups and callouts (callouts go with the frame their arrow points into).
+            function widenVersionGaps() {
+                let changed = false;
+                new Set(stageFrames().filter(f => f.frameKind === 'wip').map(f => f.round)).forEach(r => {
+                    const row = stageFrames().filter(f => f.frameKind === 'wip' && f.round === r).sort((a, b) => a.left - b.left);
+                    for (let i = 1; i < row.length; i++) {
+                        const prev = row[i - 1], cur = row[i];
+                        const gap = cur.left - (prev.left + prev.width);
+                        if (gap >= VERSION_GAP || gap < 0) continue;
+                        const splitX = prev.left + prev.width + gap / 2;
+                        const top = cur.top - FRAME_LABEL_STRIP - ROW_GAP / 2, bottom = cur.top + cur.height + ROW_GAP / 2;
+                        const movers = collectMoversWhere((x, y, o) =>
+                            (o && o.type === 'stageFrame') ? row.includes(o) && o.left >= cur.left
+                                : x > splitX && y > top && y < bottom);
+                        applyFrameMovers(movers, VERSION_GAP - gap, 0);
+                        changed = true;
+                    }
+                });
+                if (changed) canvas.requestRenderAll();
+                return changed;
             }
 
             function fitViewToFlow() {
@@ -5711,6 +5737,12 @@
 
             // Everything (frames included) whose center sits below canvas y — callouts by their tip.
             function collectMoversBelow(y) {
+                return collectMoversWhere((x, py, o) => o && o.type === 'stageFrame' ? o.top > y : py > y);
+            }
+
+            // Everything for which test(x, y, obj) holds — objects by their center (frames by
+            // their top-left), callouts by their tip (obj is null for those).
+            function collectMoversWhere(test) {
                 const movers = [];
                 const calloutsTaken = new Set();
                 canvas.getObjects().forEach(o => {
@@ -5720,7 +5752,7 @@
                         const entry = calloutRegistry[o.calloutId];
                         if (!entry || !entry.leg1 || !entry.leg2 || !entry.head || !entry.frame || !entry.box) return;
                         calloutsTaken.add(o.calloutId);
-                        if (entry.leg1.tipY <= y) return;
+                        if (!test(entry.leg1.tipX, entry.leg1.tipY, null)) return;
                         movers.push({
                             entry,
                             l1: { x1: entry.leg1.x1, y1: entry.leg1.y1, x2: entry.leg1.x2, y2: entry.leg1.y2, tipX: entry.leg1.tipX, tipY: entry.leg1.tipY },
@@ -5729,8 +5761,8 @@
                         });
                         return;
                     }
-                    const below = o.type === 'stageFrame' ? o.top > y : o.getCenterPoint().y > y;
-                    if (below) movers.push({ obj: o, left: o.left, top: o.top });
+                    const c = o.type === 'stageFrame' ? { x: o.left, y: o.top } : o.getCenterPoint();
+                    if (test(c.x, c.y, o)) movers.push({ obj: o, left: o.left, top: o.top });
                 });
                 return movers;
             }
