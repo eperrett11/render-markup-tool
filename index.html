@@ -512,6 +512,21 @@
         </div>
     </div>
 
+    <!-- Temporary before/after compare, shown over a blurred board — nothing is added to the board. -->
+    <div id="compare-lightbox" class="hidden fixed inset-0 z-[115] flex-col items-center justify-center gap-3 bg-black/60 backdrop-blur-md p-6">
+        <button id="compare-lightbox-close" class="absolute top-4 right-5 text-gray-400 hover:text-white text-xl transition-colors" aria-label="Close compare"><i class="fa-solid fa-xmark"></i></button>
+        <div id="compare-lb-stage" class="relative select-none overflow-hidden rounded-lg shadow-2xl bg-black cursor-ew-resize">
+            <img id="compare-lb-b" class="absolute inset-0 w-full h-full object-contain pointer-events-none" alt="">
+            <img id="compare-lb-a" class="absolute inset-0 w-full h-full object-contain pointer-events-none" alt="">
+            <div id="compare-lb-line" class="absolute top-0 bottom-0 w-0.5 bg-white pointer-events-none" style="box-shadow:0 0 6px rgba(0,0,0,.6)">
+                <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white text-gray-900 flex items-center justify-center shadow-lg text-xs gap-0.5"><i class="fa-solid fa-chevron-left"></i><i class="fa-solid fa-chevron-right"></i></div>
+            </div>
+            <div id="compare-lb-name-a" class="absolute top-3 left-3 text-xs font-semibold text-white bg-black/60 rounded px-2 py-1 pointer-events-none"></div>
+            <div id="compare-lb-name-b" class="absolute top-3 right-3 text-xs font-semibold text-white bg-black/60 rounded px-2 py-1 pointer-events-none"></div>
+        </div>
+        <div class="text-xs text-gray-400">Drag to compare · <span class="text-gray-500">Esc to close</span></div>
+    </div>
+
     <!-- Blocking overlay while Gemini reads the client comments; Cancel aborts the request. -->
     <div id="ai-overlay" class="hidden fixed inset-0 z-[120] items-center justify-center bg-black/50 backdrop-blur-md">
         <div class="relative flex flex-col items-center gap-4 bg-gray-950/90 border border-gray-700 rounded-xl shadow-2xl px-8 py-6 w-80">
@@ -5323,42 +5338,77 @@
                 });
             });
 
-            // Creates a new before/after compare widget from two images. The two source images
-            // are left completely untouched — this only reads their current positions (via
-            // getAbsoluteBoundingRect, since they may be group-relative while part of an
-            // activeSelection) to size/place the new widget beneath them.
-            function createCompareWidget(imgA, imgB) {
-                const rectA = getAbsoluteBoundingRect(imgA);
-                const rectB = getAbsoluteBoundingRect(imgB);
+            // Opens the two images in a temporary lightbox slider instead of adding a widget to
+            // the board. (Compare widgets on older boards still load and work as before.)
+            const compareLightbox = document.getElementById('compare-lightbox');
+            const compareStage = document.getElementById('compare-lb-stage');
+            const compareImgA = document.getElementById('compare-lb-a');
+            const compareImgB = document.getElementById('compare-lb-b');
+            const compareLine = document.getElementById('compare-lb-line');
+            let comparePos = 0.5;
 
-                // Shared target aspect ratio for the widget: the average of the two images'
-                // own aspect ratios, so neither one's crop dominates when they differ a lot.
-                const targetAspect = (rectA.width / rectA.height + rectB.width / rectB.height) / 2;
-                const targetWidth = (rectA.width + rectB.width) / 2;
-                const targetHeight = targetWidth / targetAspect;
+            function setComparePos(p) {
+                comparePos = Math.max(0, Math.min(1, p));
+                compareImgA.style.clipPath = `inset(0 ${(1 - comparePos) * 100}% 0 0)`;
+                compareLine.style.left = `calc(${comparePos * 100}% - 1px)`;
+            }
 
-                // Center it directly beneath the union of both images' bounds.
-                const unionLeft = Math.min(rectA.left, rectB.left);
-                const unionRight = Math.max(rectA.left + rectA.width, rectB.left + rectB.width);
-                const unionBottom = Math.max(rectA.top + rectA.height, rectB.top + rectB.height);
-                const margin = 40;
+            function sizeCompareStage() {
+                const el = compareImgA;
+                const aspect = (el.naturalWidth && el.naturalHeight) ? el.naturalWidth / el.naturalHeight : 4 / 3;
+                const maxW = window.innerWidth - 48, maxH = window.innerHeight - 110;
+                const w = Math.min(maxW, maxH * aspect);
+                compareStage.style.width = `${Math.round(w)}px`;
+                compareStage.style.height = `${Math.round(w / aspect)}px`;
+            }
 
-                const compare = new fabric.CompareSlider(imgA.getElement(), imgB.getElement(), {
-                    left: (unionLeft + unionRight) / 2,
-                    top: unionBottom + margin + targetHeight / 2,
-                    originX: 'center', originY: 'center',
-                    width: targetWidth, height: targetHeight,
-                    imgAName: imgA.sourceFileName || 'Image A',
-                    imgBName: imgB.sourceFileName || 'Image B',
-                    stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth,
-                    cornerColor: '#3b82f6', borderColor: '#3b82f6', transparentCorners: false
-                });
-
+            function openCompareLightbox(imgA, imgB) {
                 canvas.discardActiveObject();
-                canvas.add(compare);
-                canvas.setActiveObject(compare);
                 canvas.requestRenderAll();
-                saveHistory();
+                compareImgA.onload = sizeCompareStage;
+                compareImgA.src = imgA.getElement().src;
+                compareImgB.src = imgB.getElement().src;
+                document.getElementById('compare-lb-name-a').textContent = imgA.sourceFileName || 'Image A';
+                document.getElementById('compare-lb-name-b').textContent = imgB.sourceFileName || 'Image B';
+                setComparePos(0.5);
+                sizeCompareStage();
+                compareLightbox.classList.remove('hidden');
+                compareLightbox.classList.add('flex');
+            }
+
+            function closeCompareLightbox() {
+                compareLightbox.classList.add('hidden');
+                compareLightbox.classList.remove('flex');
+                compareImgA.removeAttribute('src');
+                compareImgB.removeAttribute('src');
+            }
+
+            const compareIsOpen = () => !compareLightbox.classList.contains('hidden');
+            compareStage.addEventListener('pointerdown', (e) => {
+                compareStage.setPointerCapture(e.pointerId);
+                const r = compareStage.getBoundingClientRect();
+                setComparePos((e.clientX - r.left) / r.width);
+            });
+            compareStage.addEventListener('pointermove', (e) => {
+                if (!compareStage.hasPointerCapture(e.pointerId)) return;
+                const r = compareStage.getBoundingClientRect();
+                setComparePos((e.clientX - r.left) / r.width);
+            });
+            compareLightbox.addEventListener('mousedown', (e) => { if (e.target === compareLightbox) closeCompareLightbox(); });
+            document.getElementById('compare-lightbox-close').addEventListener('click', closeCompareLightbox);
+            window.addEventListener('resize', () => { if (compareIsOpen()) sizeCompareStage(); });
+            // Board shortcuts are off while it's open; Esc closes, arrows nudge the divider.
+            window.addEventListener('keydown', (e) => {
+                if (!compareIsOpen()) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                if (e.key === 'Escape') closeCompareLightbox();
+                if (e.key === 'ArrowLeft') setComparePos(comparePos - 0.05);
+                if (e.key === 'ArrowRight') setComparePos(comparePos + 0.05);
+            }, true);
+
+            function createCompareWidget(imgA, imgB) {
+                openCompareLightbox(imgA, imgB);
             }
 
             const comparePickHint = document.getElementById('compare-pick-hint');
