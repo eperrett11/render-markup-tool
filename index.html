@@ -731,6 +731,10 @@
                 <input type="color" id="textBgColorInput" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
                 <button id="btn-clear-text-bg" class="text-[11px] text-gray-400 hover:text-white transition-colors ml-1">None</button>
             </div>
+            <div id="calloutLineRow" class="flex items-center gap-2">
+                <span class="toolbar-label w-16">Line</span>
+                <input type="color" id="calloutLineColorInput" value="#ffffff" class="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0">
+            </div>
         </div>
 
         <div id="pdf-page-modal" class="hidden fixed inset-0 z-[100] items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -2111,6 +2115,7 @@
             // color picker — they read as a clean note against a photo. Still fully customizable
             // afterward via syncCalloutColor().
             const CALLOUT_DEFAULT_COLOR = '#ffffff';
+            let currentCalloutLineColor = CALLOUT_DEFAULT_COLOR; // leader/arrowhead/border of the next callout
 
             // --- Compare Slider (before/after image comparison) ----------------------------
             //
@@ -2564,8 +2569,7 @@
                 if (horizontalGap >= verticalGap) {
                     const onLeft = tip.x < cx;
                     const anchorX = onLeft ? rect.left : rect.left + rect.width;
-                    const margin = Math.min(14, rect.height / 2);
-                    const anchorY = Math.max(rect.top + margin, Math.min(rect.top + rect.height - margin, tip.y));
+                    const anchorY = cy; // always into the middle of the box's edge
                     // Scale the level "flag" segment with distance so the kink stays visible on
                     // long leaders instead of shrinking to an imperceptible sliver next to the box.
                     const dist = Math.abs(anchorX - tip.x);
@@ -2575,8 +2579,7 @@
                 } else {
                     const onTop = tip.y < cy;
                     const anchorY = onTop ? rect.top : rect.top + rect.height;
-                    const margin = Math.min(14, rect.width / 2);
-                    const anchorX = Math.max(rect.left + margin, Math.min(rect.left + rect.width - margin, tip.x));
+                    const anchorX = cx;
                     const dist = Math.abs(anchorY - tip.y);
                     const legLength = Math.min(80, Math.max(28, dist * 0.35));
                     const knee = { x: anchorX, y: onTop ? anchorY - legLength : anchorY + legLength };
@@ -2851,9 +2854,16 @@
             const textColorPopover = document.getElementById('textColorPopover');
             const textColorInput = document.getElementById('textColorInput');
             const textBgColorInput = document.getElementById('textBgColorInput');
+            const calloutLineColorInput = document.getElementById('calloutLineColorInput');
 
             function updateTextColorPopoverValues() {
                 const obj = textLikeSelection();
+                // Callouts also get their arrow line / border color here
+                const forCallout = obj ? !!obj.calloutId : currentMode === 'callout';
+                document.getElementById('calloutLineRow').style.display = forCallout ? '' : 'none';
+                const lineEntry = obj && obj.calloutId && calloutRegistry[obj.calloutId];
+                const lineColor = lineEntry && lineEntry.leg1 ? lineEntry.leg1.stroke : currentCalloutLineColor;
+                if (typeof lineColor === 'string' && /^#/.test(lineColor)) calloutLineColorInput.value = lineColor;
                 if (obj && obj.calloutId) {
                     const entry = calloutRegistry[obj.calloutId];
                     if (entry) {
@@ -2885,6 +2895,17 @@
                     currentColor = hex; // pre-set for the next text box placed
                 }
                 canvas.renderAll();
+            });
+
+            calloutLineColorInput.addEventListener('input', (e) => {
+                const hex = e.target.value;
+                const obj = textLikeSelection();
+                if (obj && obj.calloutId) syncCalloutColor(obj.calloutId, hex);
+                else if (!obj) currentCalloutLineColor = hex; // pre-set for the next callout placed
+                canvas.renderAll();
+            });
+            calloutLineColorInput.addEventListener('change', () => {
+                if (textLikeSelection()) saveHistory();
             });
 
             textBgColorInput.addEventListener('input', (e) => {
@@ -3996,12 +4017,12 @@
                     // back up and use the color picker to customize it like any other object.
                     isDrawingCallout = true;
                     calloutLine = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], {
-                        strokeWidth: currentWidth, fill: CALLOUT_DEFAULT_COLOR, stroke: CALLOUT_DEFAULT_COLOR,
+                        strokeWidth: currentWidth, fill: currentCalloutLineColor, stroke: currentCalloutLineColor,
                         originX: 'center', originY: 'center', selectable: false, evented: false,
                         tipX: pointer.x, tipY: pointer.y // fixed anchor, read via tipX/tipY (see calloutRegistry note)
                     });
                     calloutHead = new fabric.Triangle({
-                        width: arrowHeadSize(currentWidth), height: arrowHeadSize(currentWidth), fill: CALLOUT_DEFAULT_COLOR,
+                        width: arrowHeadSize(currentWidth), height: arrowHeadSize(currentWidth), fill: currentCalloutLineColor,
                         left: pointer.x, top: pointer.y, originX: 'center', originY: 'center',
                         selectable: false, evented: false, angle: 90
                     });
@@ -4289,14 +4310,14 @@
                         // line itself — otherwise its diagonal bounding box (much bigger than the
                         // visible stroke) swallows clicks meant for the arrowhead at the tip.
                         const leg1 = new fabric.Line([tip.x, tip.y, tip.x, tip.y], {
-                            stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth, fill: CALLOUT_DEFAULT_COLOR,
+                            stroke: currentCalloutLineColor, strokeWidth: currentWidth, fill: currentCalloutLineColor,
                             strokeUniform: true, // see Rect above — keeps stroke weight scale-independent
                             selectable: false, evented: false, strokeLineCap: 'round',
                             perPixelTargetFind: true,
                             calloutId: id, calloutRole: 'leg1', tipX: tip.x, tipY: tip.y
                         });
                         const leg2 = new fabric.Line([tip.x, tip.y, tip.x, tip.y], {
-                            stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth, fill: CALLOUT_DEFAULT_COLOR,
+                            stroke: currentCalloutLineColor, strokeWidth: currentWidth, fill: currentCalloutLineColor,
                             strokeUniform: true,
                             selectable: false, evented: false, strokeLineCap: 'round',
                             perPixelTargetFind: true,
@@ -4309,7 +4330,7 @@
                         const frame = new fabric.Rect({
                             left: dropX, top: dropY, width: 10, height: 10,
                             fill: `rgba(255, 255, 255, ${currentOpacity})`,
-                            stroke: CALLOUT_DEFAULT_COLOR, strokeWidth: currentWidth,
+                            stroke: currentCalloutLineColor, strokeWidth: currentWidth,
                             strokeUniform: true, // see Rect (shape tool) above
                             rx: 8, ry: 8, selectable: false, evented: false,
                             calloutId: id, calloutRole: 'frame'
